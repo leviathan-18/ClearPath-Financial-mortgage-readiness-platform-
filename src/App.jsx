@@ -68,10 +68,8 @@ function normalizeCreditStrength(value) {
   const score = numberOrZero(value)
 
   if (score <= 0) return 0
+  if (score >= 300 && score <= 900) return Math.round(score)
   if (score <= 100) return Math.round(300 + (score / 100) * 600)
-  if (score >= 300 && score <= 900) {
-    return Math.round(((score - 300) / 550) * 100)
-  }
 
   return Math.max(300, Math.min(900, Math.round(score)))
 }
@@ -215,6 +213,19 @@ function approvalEngine(form) {
   const desiredLoan = numberOrZero(form.desiredLoanAmount)
   const propertyBudget = numberOrZero(form.propertyBudget)
   const years = numberOrZero(form.yearsOfExperience)
+  const employmentType = String(form.employmentType || '').trim().toLowerCase()
+
+  if (employmentType === 'unemployed') {
+    const downPaymentRatio = propertyBudget > 0 ? downPayment / propertyBudget : 0
+    const assetSupport = savings >= 250000 || downPaymentRatio >= 0.35
+    const approvalChance = assetSupport ? 10 : 8
+
+    return {
+      approvalChance: `${approvalChance}%`,
+      estimatedLoan: currency(0),
+      risk: 'High',
+    }
+  }
 
   let approvalChance = creditStrength
 
@@ -233,8 +244,7 @@ function approvalEngine(form) {
   else if (expenses > income * 0.6) approvalChance -= 6
   else if (expenses > income * 0.5) approvalChance -= 3
 
-  if (form.employmentType === 'Unemployed') approvalChance -= 20
-  else if (form.employmentType === 'Salaried') approvalChance += 2
+  if (form.employmentType === 'Salaried') approvalChance += 2
   else if (form.employmentType === 'Business owner') approvalChance += 2
   else if (form.employmentType === 'Self-employed') approvalChance += 1
 
@@ -256,6 +266,36 @@ function approvalEngine(form) {
   }
 }
 
+function buildApprovalBases(form, engineResult) {
+  const employmentType = String(form.employmentType || '').trim()
+  const propertyBudget = numberOrZero(form.propertyBudget)
+  const downPayment = numberOrZero(form.downPayment)
+  const savings = numberOrZero(form.savings)
+  const debt = numberOrZero(form.existingLoans)
+  const creditStrength = normalizeCreditStrength(form.creditStrength)
+
+  const bases = []
+
+  bases.push(`Employment type: ${employmentType || 'Not provided'} lowers the score immediately.`)
+
+  if (creditStrength >= 800) {
+    bases.push(`Credit strength is strong at ${creditStrength}, but it does not override employment risk.`)
+  } else {
+    bases.push(`Credit strength is only ${creditStrength}, which adds pressure on approval.`)
+  }
+
+  const propertySupport = propertyBudget > 0
+    ? Math.round((downPayment / propertyBudget) * 100)
+    : 0
+  bases.push(`Property budget is ${currency(propertyBudget)} with down payment support at ${propertySupport}% and savings at ${currency(savings)}.`)
+
+  if (debt > 0) {
+    bases.push(`Existing loans of ${currency(debt)} reduce repayment headroom.`)
+  }
+
+  return bases.slice(0, 3).map((text, index) => `${index + 1}. ${text}`)
+}
+
 function fieldError(errors, key) {
   return errors[key] ? <p className="field-error">{errors[key]}</p> : null
 }
@@ -273,6 +313,7 @@ export default function App() {
   const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000'
   const exampleResult = useMemo(() => lookupExampleResult(form, trainingExamples), [form, trainingExamples])
   const engineResult = useMemo(() => exampleResult || approvalEngine(form), [exampleResult, form])
+  const approvalBases = useMemo(() => buildApprovalBases(form, engineResult), [form, engineResult])
   const strengthValue = normalizeCreditStrength(form.creditStrength)
   const eligibilityErrors = useMemo(() => validateStep(4, form), [form])
   const eligibilityComplete = Object.keys(eligibilityErrors).length === 0
@@ -920,6 +961,19 @@ export default function App() {
                 <span>Risk</span>
                 <strong>{result.approvalEngine?.risk || engineResult.risk}</strong>
               </div>
+              <div>
+                <span>Property Budget</span>
+                <strong>{currency(result.creditEligibility?.propertyBudget || form.propertyBudget || 0)}</strong>
+              </div>
+            </div>
+
+            <div className="result-basis-box modal-basis-box">
+              <h4>Top 3 bases</h4>
+              <ol>
+                {approvalBases.map((basis) => (
+                  <li key={basis}>{basis}</li>
+                ))}
+              </ol>
             </div>
 
             <div className="json-preview modal-json-preview">
