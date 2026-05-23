@@ -1,13 +1,14 @@
 @import "tailwindcss";
 
 :root {
-  font-family: 'Aptos', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-  color: #0f172a;
-  background: #f5f7fb;
+  font-family: 'Aptos', 'Segoe UI', sans-serif;
+  color: #ececf1;
+  background: #343541;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  color-scheme: dark;
 }
 
 * {
@@ -16,23 +17,24 @@
 
 html {
   min-width: 320px;
+  background: #343541;
 }
 
 body {
   margin: 0;
   min-width: 320px;
-  background:
-    radial-gradient(circle at top left, rgba(14, 165, 233, 0.1), transparent 30%),
-    linear-gradient(180deg, #07111f 0%, #0b1630 40%, #f5f7fb 40%, #f5f7fb 100%);
+  background: #343541;
+  color: #ececf1;
 }
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
 #root {
   min-height: 100svh;
-  color: #0f172a;
+  color: #ececf1;
 }

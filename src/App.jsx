@@ -7,7 +7,14 @@ const stepMeta = [
   { id: 2, title: 'Personal Info', hint: 'Basic client details' },
   { id: 3, title: 'Income Structure', hint: 'Income and obligations' },
   { id: 4, title: 'Credit + Eligibility', hint: 'Approval engine' },
-  { id: 5, title: 'FAQ', hint: 'Client questions' },
+  { id: 5, title: 'FAQs', hint: 'Client questions' },
+]
+
+const chatPromptSuggestions = [
+  'What is my approval chance?',
+  'What should I enter for monthly income?',
+  'How do I improve my credit eligibility?',
+  'What is the next page I should complete?',
 ]
 
 const employmentOptions = [
@@ -260,6 +267,38 @@ function fieldError(errors, key) {
   return errors[key] ? <p className="field-error">{errors[key]}</p> : null
 }
 
+function buildAssistantReply(message, form, engineResult, currentPage, strengthValue, eligibilityComplete) {
+  const normalized = message.toLowerCase()
+
+  if (/(approval|approve|chance|eligible|eligibility)/.test(normalized)) {
+    return `Your live approval estimate is ${engineResult.approvalChance} with ${engineResult.risk} risk. Estimated loan: ${engineResult.estimatedLoan}.`
+  }
+
+  if (/(credit|score)/.test(normalized)) {
+    return form.creditStrength
+      ? `Your entered credit strength is ${form.creditStrength}/900, which maps to ${strengthValue}/100 in the model. The current eligibility outlook is ${eligibilityComplete ? 'ready to submit' : 'still missing required fields'}.`
+      : 'Add a credit strength between 300 and 900 on the Credit + Eligibility page.'
+  }
+
+  if (/(income|salary|expense|budget)/.test(normalized)) {
+    return form.monthlyIncome
+      ? `I see monthly income of ${currency(form.monthlyIncome)}, savings of ${currency(form.savings)}, and monthly expenses of ${currency(form.monthlyExpenses)}.`
+      : 'Use CAD values on the Income Structure page so the model can calculate a realistic result.'
+  }
+
+  if (/(personal|name|marital|province|dependents)/.test(normalized)) {
+    return form.name
+      ? `Personal info is partially filled for ${form.name}. The current page is ${currentPage.title}.`
+      : 'Start with the Personal Info page to capture name, age, marital status, dependents, and province.'
+  }
+
+  if (/(next|step|page|continue|where)/.test(normalized)) {
+    return `You are on ${currentPage.title}. Use the sidebar to move between pages, and complete the current form before submitting the proposal.`
+  }
+
+  return 'I can help with approval chance, income structure, credit eligibility, or the next required field. Ask a specific question and I will respond with the current form context.'
+}
+
 export default function App() {
   const [step, setStep] = useState(1)
   const [form, setForm] = useState(initialForm)
@@ -269,6 +308,13 @@ export default function App() {
   const [eligibilityReady, setEligibilityReady] = useState(false)
   const [showResultModal, setShowResultModal] = useState(false)
   const [trainingExamples, setTrainingExamples] = useState([])
+  const [chatInput, setChatInput] = useState('')
+  const [chatMessages, setChatMessages] = useState([
+    {
+      role: 'assistant',
+      text: 'I can guide you through the mortgage flow and answer questions about approval chance, income, credit, and the next page you should complete.',
+    },
+  ])
 
   const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000'
   const exampleResult = useMemo(() => lookupExampleResult(form, trainingExamples), [form, trainingExamples])
@@ -276,6 +322,7 @@ export default function App() {
   const strengthValue = normalizeCreditStrength(form.creditStrength)
   const eligibilityErrors = useMemo(() => validateStep(4, form), [form])
   const eligibilityComplete = Object.keys(eligibilityErrors).length === 0
+  const currentPage = stepMeta.find((item) => item.id === step) || stepMeta[0]
 
   useEffect(() => {
     const controller = new AbortController()
@@ -366,14 +413,6 @@ export default function App() {
       const lines = pdf.splitTextToSize(text, columnWidth)
       pdf.text(lines, marginX, cursorY)
       cursorY += lines.length * lineGap + 4
-    }
-
-    const addSectionTitle = (text) => {
-      pdf.setFont('helvetica', 'bold')
-      pdf.setFontSize(12)
-      pdf.setTextColor(15, 118, 110)
-      pdf.text(text, marginX, cursorY)
-      cursorY += 6
     }
 
     addHeading('Training-ready proposal record')
@@ -541,395 +580,503 @@ export default function App() {
     }
   }
 
+  const submitChat = (event) => {
+    event.preventDefault()
+    const message = chatInput.trim()
+    if (!message) return
+
+    const assistantReply = buildAssistantReply(message, form, engineResult, currentPage, strengthValue, eligibilityComplete)
+
+    setChatMessages((current) => [
+      ...current,
+      { role: 'user', text: message },
+      { role: 'assistant', text: assistantReply },
+    ])
+    setChatInput('')
+  }
+
+  const sendQuickPrompt = (prompt) => {
+    setChatInput(prompt)
+  }
+
+  const renderStepContent = () => {
+    if (step === 1) {
+      return (
+        <div className="page-card page-card-overview">
+          <div className="section-head">
+            <h2>Overview</h2>
+            <p>
+              A ChatGPT-style mortgage intake workspace for Canadian clients. It collects verified profile details,
+              income evidence, and credit indicators, then generates a readiness summary for advisors.
+            </p>
+          </div>
+
+          <div className="overview-grid">
+            <article className="overview-panel premium">
+              <div className="overview-label">What this does</div>
+              <h3>Structured intake and readiness report</h3>
+              <p>
+                Guides the client through verified data capture, runs deterministic eligibility checks,
+                and produces an advisor-facing readiness summary suitable for underwriting handoff.
+              </p>
+            </article>
+
+            <article className="overview-panel">
+              <div className="overview-label">Why it helps in production</div>
+              <ul>
+                <li>Localized choices reduce client confusion.</li>
+                <li>Deterministic scoring provides consistent signals.</li>
+                <li>Locked progression improves data completeness.</li>
+                <li>Compact report output is ready for advisor review.</li>
+              </ul>
+            </article>
+
+            <article className="overview-panel">
+              <div className="overview-label">Process</div>
+              <ol>
+                <li>Overview</li>
+                <li>Personal Info</li>
+                <li>Income Structure</li>
+                <li>Credit + Eligibility</li>
+                <li>FAQs</li>
+              </ol>
+            </article>
+          </div>
+
+          <div className="action-row">
+            <button type="button" className="primary-btn" onClick={() => setStep(2)}>
+              Begin intake
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    if (step === 2) {
+      return (
+        <form className="form-grid page-card" onSubmit={(event) => { event.preventDefault(); goNext(); }}>
+          <div className="section-head">
+            <h2>Personal Info</h2>
+            <p>Fill this page before continuing to the next section.</p>
+          </div>
+
+          <label>
+            <span>Name</span>
+            <input name="name" value={form.name} onChange={updateField} placeholder="John Doe" />
+            {fieldError(errors, 'name')}
+          </label>
+
+          <div className="two-col">
+            <label>
+              <span>Age</span>
+              <input name="age" type="number" value={form.age} onChange={updateField} placeholder="32" />
+              {fieldError(errors, 'age')}
+            </label>
+
+            <label>
+              <span>Dependents</span>
+              <input name="dependents" type="number" value={form.dependents} onChange={updateField} placeholder="2" />
+              {fieldError(errors, 'dependents')}
+            </label>
+          </div>
+
+          <div className="two-col">
+            <label>
+              <span>Marital Status</span>
+              <select name="maritalStatus" value={form.maritalStatus} onChange={updateField}>
+                <option value="">Select marital status</option>
+                <option value="Single">Single</option>
+                <option value="Married">Married</option>
+                <option value="Common Law">Common Law</option>
+                <option value="Divorced">Divorced</option>
+                <option value="Widowed">Widowed</option>
+              </select>
+              {fieldError(errors, 'maritalStatus')}
+            </label>
+
+            <label>
+              <span>Province</span>
+              <select name="province" value={form.province} onChange={updateField}>
+                {provinceOptions.map((province) => (
+                  <option key={province} value={province}>{province}</option>
+                ))}
+              </select>
+              {fieldError(errors, 'province')}
+            </label>
+          </div>
+
+          <div className="action-row">
+            <button type="button" className="secondary-btn" onClick={goBack}>
+              Back to Overview
+            </button>
+            <button type="submit" className="primary-btn">
+              Continue to Income Structure
+            </button>
+          </div>
+        </form>
+      )
+    }
+
+    if (step === 3) {
+      return (
+        <form className="form-grid page-card" onSubmit={(event) => { event.preventDefault(); goNext(); }}>
+          <div className="section-head">
+            <h2>Income Structure</h2>
+            <p>Use Canadian salary and expense values that reflect the applicant's real budget.</p>
+          </div>
+
+          <label>
+            <span>Employment Type</span>
+            <select name="employmentType" value={form.employmentType} onChange={updateField}>
+              {employmentOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+            {fieldError(errors, 'employmentType')}
+          </label>
+
+          <div className="two-col">
+            <label>
+              <span>Monthly Income (CAD)</span>
+              <input name="monthlyIncome" type="number" value={form.monthlyIncome} onChange={updateField} placeholder="8500" />
+              {fieldError(errors, 'monthlyIncome')}
+            </label>
+
+            <label>
+              <span>Savings (CAD)</span>
+              <input name="savings" type="number" value={form.savings} onChange={updateField} placeholder="40000" />
+              {fieldError(errors, 'savings')}
+            </label>
+          </div>
+
+          <div className="two-col">
+            <label>
+              <span>Existing Loans (monthly CAD)</span>
+              <input name="existingLoans" type="number" value={form.existingLoans} onChange={updateField} placeholder="1200" />
+              {fieldError(errors, 'existingLoans')}
+            </label>
+
+            <label>
+              <span>Monthly Expenses (CAD)</span>
+              <input name="monthlyExpenses" type="number" value={form.monthlyExpenses} onChange={updateField} placeholder="3000" />
+              {fieldError(errors, 'monthlyExpenses')}
+            </label>
+          </div>
+
+          <label>
+            <span>Years of Experience</span>
+            <input name="yearsOfExperience" type="number" value={form.yearsOfExperience} onChange={updateField} placeholder="5" />
+            {fieldError(errors, 'yearsOfExperience')}
+          </label>
+
+          <div className="note-box">
+            <strong>Canada-specific guidance</strong>
+            <p>Salaried and self-employed applicants are assessed differently. Keep the numbers realistic and in CAD.</p>
+          </div>
+
+          <div className="action-row">
+            <button type="button" className="secondary-btn" onClick={goBack}>
+              Back
+            </button>
+            <button type="submit" className="primary-btn">
+              Continue to Credit + Eligibility
+            </button>
+          </div>
+        </form>
+      )
+    }
+
+    if (step === 4) {
+      return (
+        <form className="form-grid page-card" onSubmit={submitApplication}>
+          <div className="section-head">
+            <h2>Credit + Eligibility</h2>
+            <p>We calculate approval chance with a simple engine. No bank APIs are needed.</p>
+          </div>
+
+          <div className="two-col">
+            <label>
+              <span>Approximate Credit Strength (Canada 300-900)</span>
+              <input name="creditStrength" type="number" value={form.creditStrength} onChange={updateField} placeholder="778" min="300" max="900" />
+              {fieldError(errors, 'creditStrength')}
+            </label>
+
+            <label>
+              <span>Desired Loan Amount (CAD)</span>
+              <input name="desiredLoanAmount" type="number" value={form.desiredLoanAmount} onChange={updateField} placeholder="500000" />
+              {fieldError(errors, 'desiredLoanAmount')}
+            </label>
+          </div>
+
+          <div className="two-col">
+            <label>
+              <span>Property Budget (CAD)</span>
+              <input name="propertyBudget" type="number" value={form.propertyBudget} onChange={updateField} placeholder="650000" />
+              {fieldError(errors, 'propertyBudget')}
+            </label>
+
+            <label>
+              <span>Down Payment (CAD)</span>
+              <input name="downPayment" type="number" value={form.downPayment} onChange={updateField} placeholder="65000" />
+              {fieldError(errors, 'downPayment')}
+            </label>
+          </div>
+
+          {!eligibilityComplete && (
+            <div className="loading-strip" aria-live="polite">
+              <span className="spinner" aria-hidden="true" />
+              <div>
+                <strong>Loading eligibility check</strong>
+                <p>Fill all Credit + Eligibility fields to unlock submit.</p>
+              </div>
+            </div>
+          )}
+
+          {eligibilityComplete && !eligibilityReady && (
+            <div className="loading-strip" aria-live="polite">
+              <span className="spinner" aria-hidden="true" />
+              <div>
+                <strong>Preparing submit</strong>
+                <p>Checking the loan profile and building the proposal record.</p>
+              </div>
+            </div>
+          )}
+
+          <div className="action-row">
+            <button type="button" className="secondary-btn" onClick={goBack}>
+              Back
+            </button>
+            <button type="submit" className="primary-btn" disabled={status === 'saving' || !eligibilityReady}>
+              {status === 'saving' ? 'Saving...' : 'Submit proposal'}
+            </button>
+          </div>
+
+          {status === 'saved' && result && (
+            <div className="success-box">
+              Saved successfully. You can review the result window and submit again after editing the fields.
+            </div>
+          )}
+
+          {status === 'offline' && result && (
+            <div className="warning-box">
+              Save failed; the proposal data is still visible in the result window and can be retried.
+            </div>
+          )}
+        </form>
+      )
+    }
+
+    return (
+      <div className="page-card">
+        <div className="section-head">
+          <h2>FAQs</h2>
+          <p>Common questions your client may ask before approval.</p>
+        </div>
+
+        <div className="faq-list">
+          <article>
+            <h3>Why is credit shown as a percentage?</h3>
+            <p>The proposal now uses a score strength meter so the client sees progress more intuitively.</p>
+          </article>
+          <article>
+            <h3>Can the data still be saved?</h3>
+            <p>Yes. The backend can store the application record and later be replaced with any storage layer you prefer.</p>
+          </article>
+          <article>
+            <h3>What makes this Canada-specific?</h3>
+            <p>Province selection, Canadian income guidance, and lender-style approval logic are tailored for Canada.</p>
+          </article>
+        </div>
+
+        <div className="action-row">
+          <button type="button" className="secondary-btn" onClick={() => setStep(4)}>
+            Back to Credit
+          </button>
+          <button type="button" className="primary-btn" onClick={() => setStep(2)}>
+            Review from Start
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const renderResultView = () => {
+    if (!result) return null
+
+    const personalInfo = result.personalInfo || {}
+    const incomeStructure = result.incomeStructure || {}
+    const creditEligibility = result.creditEligibility || {}
+    const approval = result.approvalEngine || engineResult
+
+    return (
+      <section className="result-view page-card" aria-labelledby="result-view-title">
+        <div className="result-view-head">
+          <div>
+            <h2 id="result-view-title">Training-ready proposal record</h2>
+            <p>Approval result summary and saved proposal data for client review.</p>
+          </div>
+
+          <button type="button" className="primary-btn result-save-btn" onClick={saveResultToDevice}>
+            Save to device
+          </button>
+        </div>
+
+        <div className="result-card">
+          <div>
+            <span>Approval Chance</span>
+            <strong>{approval.approvalChance}</strong>
+          </div>
+          <div>
+            <span>Estimated Loan</span>
+            <strong>{approval.estimatedLoan}</strong>
+          </div>
+          <div>
+            <span>Risk</span>
+            <strong>{approval.risk}</strong>
+          </div>
+        </div>
+
+        <div className="result-details-grid">
+          <article className="result-detail-card">
+            <h3>Personal Info</h3>
+            <ul>
+              <li><span>Name</span><strong>{personalInfo.name || '—'}</strong></li>
+              <li><span>Age</span><strong>{personalInfo.age || '—'}</strong></li>
+              <li><span>Marital Status</span><strong>{personalInfo.maritalStatus || '—'}</strong></li>
+              <li><span>Dependents</span><strong>{personalInfo.dependents || '—'}</strong></li>
+              <li><span>Province</span><strong>{personalInfo.province || '—'}</strong></li>
+            </ul>
+          </article>
+
+          <article className="result-detail-card">
+            <h3>Income Structure</h3>
+            <ul>
+              <li><span>Employment Type</span><strong>{incomeStructure.employmentType || '—'}</strong></li>
+              <li><span>Monthly Income</span><strong>{currency(incomeStructure.monthlyIncome || 0)}</strong></li>
+              <li><span>Savings</span><strong>{currency(incomeStructure.savings || 0)}</strong></li>
+              <li><span>Existing Loans</span><strong>{currency(incomeStructure.existingLoans || 0)}</strong></li>
+              <li><span>Monthly Expenses</span><strong>{currency(incomeStructure.monthlyExpenses || 0)}</strong></li>
+              <li><span>Years of Experience</span><strong>{incomeStructure.yearsOfExperience || '—'}</strong></li>
+            </ul>
+          </article>
+
+          <article className="result-detail-card">
+            <h3>Credit Eligibility</h3>
+            <ul>
+              <li><span>Credit Strength</span><strong>{creditEligibility.creditStrength ? `${creditEligibility.creditStrength}%` : '—'}</strong></li>
+              <li><span>Desired Loan Amount</span><strong>{currency(creditEligibility.desiredLoanAmount || 0)}</strong></li>
+              <li><span>Property Budget</span><strong>{currency(creditEligibility.propertyBudget || 0)}</strong></li>
+              <li><span>Down Payment</span><strong>{currency(creditEligibility.downPayment || 0)}</strong></li>
+            </ul>
+          </article>
+
+          <article className="result-detail-card result-detail-card-accent">
+            <h3>Result</h3>
+            <ul>
+              <li><span>Approval Chance</span><strong>{approval.approvalChance}</strong></li>
+              <li><span>Estimated Loan</span><strong>{approval.estimatedLoan}</strong></li>
+              <li><span>Risk</span><strong>{approval.risk}</strong></li>
+              <li><span>Created At</span><strong>{result.createdAt || '—'}</strong></li>
+              <li><span>Saved To MongoDb</span><strong>{String(result.savedToMongoDb ?? false)}</strong></li>
+              <li><span>Saved At</span><strong>{result.savedAt || '—'}</strong></li>
+            </ul>
+          </article>
+        </div>
+      </section>
+    )
+  }
+
   return (
     <div className="app-shell">
       <div className="app-backdrop" />
-      <div className="app-container">
-        <header className="hero-card">
-          <div className="hero-copy">
-            <div className="eyebrow">Canada mortgage intake</div>
-            <h1>Locked-step application flow for client onboarding</h1>
-            
+      <div className="app-layout">
+        <aside className="sidebar">
+          <div className="brand-block">
+            <div className="brand-mark">ClearPath</div>
+            <div className="brand-copy">
+              <span>Mortgage readiness platform</span>
+            </div>
           </div>
 
-          <div className="hero-stats">
-            <div><span>Clients</span><strong>{form.name ? '1' : '—'}</strong></div>
-            <div><span>Region</span><strong>Canada</strong></div>
-            <div><span>Mode</span><strong>Guided intake</strong></div>
-        <div><span>Score range</span><strong>300-900</strong></div>
+          <div className="sidebar-section">
+            <div className="sidebar-section-head">
+              <span>Pages</span>
+              <strong>{stepMeta.length} sections</strong>
+            </div>
+            <nav className="sidebar-nav" aria-label="Application pages">
+              {stepMeta.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`sidebar-step ${item.id === step ? 'active' : ''} ${item.id < step ? 'complete' : ''}`}
+                  onClick={() => setStep(item.id)}
+                >
+                  <span className="sidebar-step-index">0{item.id}</span>
+                  <span className="sidebar-step-copy">
+                    <strong>{item.title}</strong>
+                    <small>{item.hint}</small>
+                  </span>
+                </button>
+              ))}
+            </nav>
           </div>
-        </header>
+        </aside>
 
-        <nav className="mini-steps" aria-label="Form steps">
-          {stepMeta.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className={`mini-step ${s.id === step ? 'active' : ''} ${s.id < step ? 'complete' : ''}`}
-              onClick={() => { if (s.id <= step) setStep(s.id) }}
-            >
-              {s.title}
-            </button>
-          ))}
-        </nav>
+        <main className="workspace">
+          <header className="workspace-header">
+            <div>
+              <div className="eyebrow">Mortgage assistant workspace</div>
+              <h1>{currentPage.title}</h1>
+              <p>{currentPage.hint} and chat-guided support in one responsive screen.</p>
+            </div>
+          </header>
 
-        <main className="content-grid">
-          <section className="form-card">
-            {step === 1 && (
-              <div className="form-grid">
-                <div className="section-head">
-                  <h2>Overview</h2>
-                  <p>
-                    A production-ready mortgage intake flow tailored for Canadian clients —
-                    collects verified profile details, income evidence, and credit indicators,
-                    and generates a concise, presentation-ready readiness report for advisors.
-                  </p>
-                </div>
-
-                <div className="overview-grid">
-                  <article className="overview-panel premium">
-                    <div className="overview-label">What this does</div>
-                    <h3>Structured intake and readiness report</h3>
-                    <p>
-                      Guides the client through verified data capture (profile, income, liabilities),
-                      runs deterministic eligibility checks, and produces a compact advisor-facing
-                      readiness summary suitable for underwriting handoff or client proposals.
-                    </p>
-                  </article>
-
-                  <article className="overview-panel">
-                    <div className="overview-label">Why it helps in production</div>
-                    <ul>
-                      <li>Localized choices (province, employment types) reduce client confusion.</li>
-                      <li>Deterministic scoring provides consistent, auditable eligibility signals.</li>
-                      <li>Locked progression improves data completeness and reduces follow-up.</li>
-                      <li>Compact report output is ready for advisor review or downstream systems.</li>
-                    </ul>
-                  </article>
-
-                  <article className="overview-panel">
-                    <div className="overview-label">Process</div>
-                    <ol>
-                      <li>Overview (client guidance)</li>
-                      <li>Personal Info (identity & contact)</li>
-                      <li>Income Structure (verified income & expenses)</li>
-                      <li>Credit + Eligibility (scoring & recommendation)</li>
-                      <li>FAQ & next steps</li>
-                    </ol>
-                  </article>
-                </div>
-
-                <div className="action-row">
-                  <button type="button" className="primary-btn" onClick={() => setStep(2)}>
-                    Begin intake
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {step === 2 && (
-              <form className="form-grid" onSubmit={(event) => { event.preventDefault(); goNext(); }}>
-                <div className="section-head">
-                  <h2>Personal Info</h2>
-                  <p>Fill this page fully before the next page unlocks.</p>
-                </div>
-
-                <label>
-                  <span>Name</span>
-                  <input name="name" value={form.name} onChange={updateField} placeholder="John Doe" />
-                  {fieldError(errors, 'name')}
-                </label>
-
-                <div className="two-col">
-                  <label>
-                    <span>Age</span>
-                    <input name="age" type="number" value={form.age} onChange={updateField} placeholder="32" />
-                    {fieldError(errors, 'age')}
-                  </label>
-
-                  <label>
-                    <span>Dependents</span>
-                    <input name="dependents" type="number" value={form.dependents} onChange={updateField} placeholder="2" />
-                    {fieldError(errors, 'dependents')}
-                  </label>
-                </div>
-
-                <div className="two-col">
-                  <label>
-                    <span>Marital Status</span>
-                    <select name="maritalStatus" value={form.maritalStatus} onChange={updateField}>
-                      <option value="">Select marital status</option>
-                      <option value="Single">Single</option>
-                      <option value="Married">Married</option>
-                      <option value="Common Law">Common Law</option>
-                      <option value="Divorced">Divorced</option>
-                      <option value="Widowed">Widowed</option>
-                    </select>
-                    {fieldError(errors, 'maritalStatus')}
-                  </label>
-
-                  <label>
-                    <span>Province</span>
-                    <select name="province" value={form.province} onChange={updateField}>
-                      {provinceOptions.map((province) => (
-                        <option key={province} value={province}>{province}</option>
-                      ))}
-                    </select>
-                    {fieldError(errors, 'province')}
-                  </label>
-                </div>
-
-                <div className="action-row">
-                  <button type="button" className="secondary-btn" onClick={goBack}>
-                    Back to Overview
-                  </button>
-                  <button type="submit" className="primary-btn">
-                    Continue to Income Structure
-                  </button>
-                </div>
-              </form>
-            )}
-
-            {step === 3 && (
-              <form className="form-grid" onSubmit={(event) => { event.preventDefault(); goNext(); }}>
-                <div className="section-head">
-                  <h2>Income Structure</h2>
-                  <p>Use Canadian salary and expense values that reflect the applicant's real budget.</p>
-                </div>
-
-                <label>
-                  <span>Employment Type</span>
-                  <select name="employmentType" value={form.employmentType} onChange={updateField}>
-                    {employmentOptions.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
-                  {fieldError(errors, 'employmentType')}
-                </label>
-
-                <div className="two-col">
-                  <label>
-                    <span>Monthly Income (CAD)</span>
-                    <input name="monthlyIncome" type="number" value={form.monthlyIncome} onChange={updateField} placeholder="8500" />
-                    {fieldError(errors, 'monthlyIncome')}
-                  </label>
-
-                  <label>
-                    <span>Savings (CAD)</span>
-                    <input name="savings" type="number" value={form.savings} onChange={updateField} placeholder="40000" />
-                    {fieldError(errors, 'savings')}
-                  </label>
-                </div>
-
-                <div className="two-col">
-                  <label>
-                    <span>Existing Loans (monthly CAD)</span>
-                    <input name="existingLoans" type="number" value={form.existingLoans} onChange={updateField} placeholder="1200" />
-                    {fieldError(errors, 'existingLoans')}
-                  </label>
-
-                  <label>
-                    <span>Monthly Expenses (CAD)</span>
-                    <input name="monthlyExpenses" type="number" value={form.monthlyExpenses} onChange={updateField} placeholder="3000" />
-                    {fieldError(errors, 'monthlyExpenses')}
-                  </label>
-                </div>
-
-                <label>
-                  <span>Years of Experience</span>
-                  <input name="yearsOfExperience" type="number" value={form.yearsOfExperience} onChange={updateField} placeholder="5" />
-                  {fieldError(errors, 'yearsOfExperience')}
-                </label>
-
-                <div className="note-box">
-                  <strong>Canada-specific guidance</strong>
-                  <p>
-                    Salaried and self-employed applicants are assessed differently. Keep the numbers realistic and in CAD.
-                  </p>
-                </div>
-
-                <div className="action-row">
-                  <button type="button" className="secondary-btn" onClick={goBack}>
-                    Back
-                  </button>
-                  <button type="submit" className="primary-btn">
-                    Continue to Credit + Eligibility
-                  </button>
-                </div>
-              </form>
-            )}
-
-            {step === 4 && (
-              <form className="form-grid" onSubmit={submitApplication}>
-                <div className="section-head">
-                  <h2>Credit + Eligibility</h2>
-                  <p>We calculate approval chance with a simple engine. No bank APIs are needed.</p>
-                </div>
-
-                <div className="two-col">
-                  <label>
-                    <span>Approximate Credit Strength (Canada 300-900)</span>
-                    <input name="creditStrength" type="number" value={form.creditStrength} onChange={updateField} placeholder="778" min="300" max="900" />
-                    {fieldError(errors, 'creditStrength')}
-                  </label>
-
-                  <label>
-                    <span>Desired Loan Amount (CAD)</span>
-                    <input name="desiredLoanAmount" type="number" value={form.desiredLoanAmount} onChange={updateField} placeholder="500000" />
-                    {fieldError(errors, 'desiredLoanAmount')}
-                  </label>
-                </div>
-
-                <div className="two-col">
-                  <label>
-                    <span>Property Budget (CAD)</span>
-                    <input name="propertyBudget" type="number" value={form.propertyBudget} onChange={updateField} placeholder="650000" />
-                    {fieldError(errors, 'propertyBudget')}
-                  </label>
-
-                  <label>
-                    <span>Down Payment (CAD)</span>
-                    <input name="downPayment" type="number" value={form.downPayment} onChange={updateField} placeholder="65000" />
-                    {fieldError(errors, 'downPayment')}
-                  </label>
-                </div>
-
-                {!eligibilityComplete && (
-                  <div className="loading-strip" aria-live="polite">
-                    <span className="spinner" aria-hidden="true" />
-                    <div>
-                      <strong>Loading eligibility check</strong>
-                      <p>Fill all Credit + Eligibility fields to unlock submit.</p>
-                    </div>
-                  </div>
-                )}
-
-                {eligibilityComplete && !eligibilityReady && (
-                  <div className="loading-strip" aria-live="polite">
-                    <span className="spinner" aria-hidden="true" />
-                    <div>
-                      <strong>Preparing submit</strong>
-                      <p>Checking the loan profile and building the proposal record.</p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="action-row">
-                  <button type="button" className="secondary-btn" onClick={goBack}>
-                    Back
-                  </button>
-                    <button type="submit" className="primary-btn" disabled={status === 'saving' || !eligibilityReady}>
-                      {status === 'saving' ? 'Saving...' : 'Submit proposal'}
-                  </button>
-                </div>
-
-                  {status === 'saved' && result && (
-                    <div className="success-box">
-                      Saved successfully. You can review the result window and submit again after editing the fields.
-                    </div>
-                  )}
-
-                  {status === 'offline' && result && (
-                    <div className="warning-box">
-                      Save failed; the proposal data is still visible in the result window and can be retried.
-                    </div>
-                  )}
-              </form>
-            )}
-
-            {step === 5 && (
-              <div className="form-grid">
-                <div className="section-head">
-                  <h2>FAQ</h2>
-                  <p>Common questions your client may ask before approval.</p>
-                </div>
-
-                <div className="faq-list">
-                  <article>
-                    <h3>Why is credit shown as a percentage?</h3>
-                    <p>The proposal now uses a score strength meter so the client sees progress more intuitively.</p>
-                  </article>
-                  <article>
-                    <h3>Can the data still be saved?</h3>
-                    <p>Yes. The backend can store the application record and later be replaced with any storage layer you prefer.</p>
-                  </article>
-                  <article>
-                    <h3>What makes this Canada-specific?</h3>
-                    <p>Province selection, Canadian income guidance, and lender-style approval logic are tailored for Canada.</p>
-                  </article>
-                </div>
-
-                <div className="action-row">
-                  <button type="button" className="secondary-btn" onClick={() => setStep(4)}>
-                    Back to Credit
-                  </button>
-                  <button type="button" className="primary-btn" onClick={() => setStep(2)}>
-                    Review from Start
-                  </button>
-                </div>
-              </div>
-            )}
+          <section className="workspace-panel">
+            {showResultModal && result ? renderResultView() : renderStepContent()}
           </section>
-
-          <aside className="side-card">
-            <div className="side-section">
-              <span>Data quality</span>
-              <p>Each step enforces required fields so the intake produces complete, advisor-ready records.</p>
-            </div>
-
-            {/* Current values removed to keep the UI client-facing clean */}
-
-            <div className="side-section">
-              <span>Data export & compliance</span>
-              <p>
-                Records are structured for downstream export (CSV/JSON) and include notes for PII handling — configure your storage and retention policies before using in production.
-              </p>
-            </div>
-          </aside>
         </main>
+
+        <aside className="chat-rail">
+          <section className="chat-panel">
+            <div className="panel-head">
+              <div>
+                <span>Assistant</span>
+                <h2>Chat with the system</h2>
+              </div>
+            </div>
+
+            <div className="prompt-stack prompt-stack-inline">
+              {chatPromptSuggestions.map((prompt) => (
+                <button key={prompt} type="button" className="prompt-chip" onClick={() => sendQuickPrompt(prompt)}>
+                  {prompt}
+                </button>
+              ))}
+            </div>
+
+            <div className="chat-stream" aria-live="polite">
+              {chatMessages.map((message, index) => (
+                <article key={`${message.role}-${index}`} className={`chat-bubble ${message.role}`}>
+                  <span className="chat-role">{message.role === 'assistant' ? 'Assistant' : 'You'}</span>
+                  <p>{message.text}</p>
+                </article>
+              ))}
+            </div>
+
+            <form className="chat-composer" onSubmit={submitChat}>
+              <textarea
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                rows={4}
+                placeholder="Type your question here..."
+              />
+              <button type="submit" className="primary-btn">
+                Send
+              </button>
+            </form>
+          </section>
+        </aside>
       </div>
 
-      {showResultModal && result && (
-        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="result-modal-title">
-          <div className="modal-card">
-            <div className="modal-head">
-              <div>
-                <span className="modal-kicker">Approval result</span>
-                <h3 id="result-modal-title">Training-ready proposal record</h3>
-              </div>
-              <div className="modal-actions-inline">
-                <button type="button" className="secondary-btn modal-save-btn" onClick={saveResultToDevice}>
-                  Save to device
-                </button>
-                <button type="button" className="modal-close" onClick={closeResultModal} aria-label="Close result window">
-                  ×
-                </button>
-              </div>
-            </div>
-
-            <div className="result-card modal-result-card">
-              <div>
-                <span>Approval Chance</span>
-                <strong>{result.approvalEngine?.approvalChance || engineResult.approvalChance}</strong>
-              </div>
-              <div>
-                <span>Estimated Loan</span>
-                <strong>{result.approvalEngine?.estimatedLoan || engineResult.estimatedLoan}</strong>
-              </div>
-              <div>
-                <span>Risk</span>
-                <strong>{result.approvalEngine?.risk || engineResult.risk}</strong>
-              </div>
-            </div>
-
-            <div className="json-preview modal-json-preview">
-              <h4>Training-ready proposal record</h4>
-              <pre>{JSON.stringify(result, null, 2)}</pre>
-            </div>
-
-          </div>
-        </div>
-      )}
     </div>
   )
 }
