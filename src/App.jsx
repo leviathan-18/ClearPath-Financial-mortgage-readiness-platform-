@@ -1,35 +1,61 @@
 import { jsPDF } from 'jspdf'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
-const stepMeta = [
-  { id: 1, title: 'Overview', hint: 'Proposal summary' },
-  { id: 2, title: 'Personal Info', hint: 'Basic client details' },
-  { id: 3, title: 'Income Structure', hint: 'Income and obligations' },
-  { id: 4, title: 'Credit + Eligibility', hint: 'Approval engine' },
-  { id: 5, title: 'FAQ', hint: 'Client questions' },
+const intakeFields = [
+  { key: 'name', label: 'What is your full name?', placeholder: 'Enter your name' },
+  { key: 'age', label: 'What is your age?', type: 'number', placeholder: '18 - 65' },
+  {
+    key: 'maritalStatus',
+    label: 'What is your marital status?',
+    options: ['Single', 'Married', 'Divorced', 'Common Law', 'Widowed'],
+  },
+  { key: 'dependents', label: 'How many dependents do you have?', type: 'number', placeholder: '0' },
+  {
+    key: 'province',
+    label: 'Which province do you live in?',
+    options: [
+      'Ontario',
+      'British Columbia',
+      'Alberta',
+      'Quebec',
+      'Manitoba',
+      'Saskatchewan',
+      'Nova Scotia',
+      'New Brunswick',
+      'Newfoundland and Labrador',
+      'Prince Edward Island',
+    ],
+  },
+  {
+    key: 'employmentType',
+    label: 'What type of employment do you have?',
+    options: ['Salaried', 'Self-employed', 'Business owner', 'Entrepreneur', 'Freelancer', 'Unemployed'],
+  },
+  { key: 'monthlyIncome', label: 'What is your monthly income in CAD?', type: 'number', placeholder: '8500' },
+  { key: 'savings', label: 'How much savings do you have in CAD?', type: 'number', placeholder: '40000' },
+  { key: 'existingLoans', label: 'How much do you pay in existing loans each month?', type: 'number', placeholder: '1200' },
+  { key: 'monthlyExpenses', label: 'What are your monthly expenses in CAD?', type: 'number', placeholder: '3000' },
+  { key: 'yearsOfExperience', label: 'How many years of work experience do you have?', type: 'number', placeholder: '5' },
+  { key: 'creditStrength', label: 'What is your credit strength score? Use the 300 to 900 range.', type: 'number', placeholder: '778' },
+  { key: 'desiredLoanAmount', label: 'What loan amount do you want in CAD?', type: 'number', placeholder: '500000' },
+  { key: 'propertyBudget', label: 'What is your property budget in CAD?', type: 'number', placeholder: '650000' },
+  { key: 'downPayment', label: 'What is your down payment in CAD?', type: 'number', placeholder: '65000' },
 ]
 
-const employmentOptions = [
-  'Salaried',
-  'Self-employed',
-  'Business owner',
-  'Entrepreneur',
-  'Freelancer',
-  'Unemployed',
-]
-
-const provinceOptions = [
-  'Ontario',
-  'British Columbia',
-  'Alberta',
-  'Quebec',
-  'Manitoba',
-  'Saskatchewan',
-  'Nova Scotia',
-  'New Brunswick',
-  'Newfoundland and Labrador',
-  'Prince Edward Island',
+const faqItems = [
+  {
+    question: 'Why is this built as a chat flow?',
+    answer: 'The assistant collects the same mortgage fields step by step so the experience feels closer to ChatGPT or Claude.',
+  },
+  {
+    question: 'How is approval chance calculated?',
+    answer: 'The app combines the captured answers with a deterministic scoring engine and any example records from the API.',
+  },
+  {
+    question: 'Can I edit an answer after typing it?',
+    answer: 'Yes. After the intake is complete, you can send a message like “change income to 9000” or “update province to Ontario”.',
+  },
 ]
 
 const initialForm = {
@@ -37,8 +63,8 @@ const initialForm = {
   age: '',
   maritalStatus: '',
   dependents: '',
-  province: 'Ontario',
-  employmentType: 'Salaried',
+  province: '',
+  employmentType: '',
   monthlyIncome: '',
   savings: '',
   existingLoans: '',
@@ -51,12 +77,11 @@ const initialForm = {
 }
 
 function currency(value) {
-  const amount = Number(value || 0)
   return new Intl.NumberFormat('en-CA', {
     style: 'currency',
     currency: 'CAD',
     maximumFractionDigits: 0,
-  }).format(amount)
+  }).format(Number(value || 0))
 }
 
 function numberOrZero(value) {
@@ -66,17 +91,19 @@ function numberOrZero(value) {
 
 function normalizeCreditStrength(value) {
   const score = numberOrZero(value)
-
   if (score <= 0) return 0
-  if (score >= 300 && score <= 900) return Math.round(score)
   if (score <= 100) return Math.round(300 + (score / 100) * 600)
-
+  if (score >= 300 && score <= 900) return Math.round(score)
   return Math.max(300, Math.min(900, Math.round(score)))
 }
 
 function isValidCreditStrength(value) {
   const score = numberOrZero(value)
   return score >= 300 && score <= 900
+}
+
+function sameFieldValue(left, right) {
+  return String(left ?? '').trim().toLowerCase() === String(right ?? '').trim().toLowerCase()
 }
 
 function parseTrainingCompletion(completion) {
@@ -91,15 +118,8 @@ function parseTrainingCompletion(completion) {
   }
 }
 
-function sameFieldValue(left, right) {
-  const leftValue = String(left ?? '').trim().toLowerCase()
-  const rightValue = String(right ?? '').trim().toLowerCase()
-  if (!leftValue && !rightValue) return true
-  return leftValue === rightValue
-}
-
 function exampleDistance(form, example) {
-  const numericWeights = {
+  const weights = {
     age: 1,
     dependents: 1,
     monthlyIncome: 0.004,
@@ -114,14 +134,9 @@ function exampleDistance(form, example) {
   }
 
   let distance = 0
-
-  Object.entries(numericWeights).forEach(([key, weight]) => {
-    const leftValue = key === 'creditStrength'
-      ? normalizeCreditStrength(form[key])
-      : numberOrZero(form[key])
-    const rightValue = key === 'creditStrength'
-      ? normalizeCreditStrength(example[key])
-      : numberOrZero(example[key])
+  Object.entries(weights).forEach(([key, weight]) => {
+    const leftValue = key === 'creditStrength' ? normalizeCreditStrength(form[key]) : numberOrZero(form[key])
+    const rightValue = key === 'creditStrength' ? normalizeCreditStrength(example[key]) : numberOrZero(example[key])
     distance += Math.abs(leftValue - rightValue) * weight
   })
 
@@ -173,33 +188,41 @@ function lookupExampleResult(form, examples) {
   return null
 }
 
-function validateStep(step, form) {
+function validateField(key, value) {
+  const numericValue = numberOrZero(value)
+
+  switch (key) {
+    case 'name':
+      return String(value || '').trim() ? '' : 'Name is required.'
+    case 'age':
+      return numericValue >= 18 && numericValue <= 65 ? '' : 'Age must be between 18 and 65.'
+    case 'maritalStatus':
+    case 'province':
+    case 'employmentType':
+      return String(value || '').trim() ? '' : 'This field is required.'
+    case 'dependents':
+    case 'monthlyIncome':
+    case 'savings':
+    case 'existingLoans':
+    case 'monthlyExpenses':
+    case 'yearsOfExperience':
+    case 'desiredLoanAmount':
+    case 'propertyBudget':
+    case 'downPayment':
+      return numericValue >= 0 ? '' : 'Enter a valid number.'
+    case 'creditStrength':
+      return isValidCreditStrength(value) ? '' : 'Credit strength must be between 300 and 900.'
+    default:
+      return ''
+  }
+}
+
+function validateStep(stepIndex, form) {
   const errors = {}
-
-  if (step === 2) {
-    if (!form.name.trim()) errors.name = 'Name is required.'
-    if (!form.age || numberOrZero(form.age) < 18) errors.age = 'Age must be at least 18.'
-    if (!form.maritalStatus.trim()) errors.maritalStatus = 'Marital status is required.'
-    if (form.dependents === '') errors.dependents = 'Dependents is required.'
-    if (!form.province.trim()) errors.province = 'Province is required.'
-  }
-
-  if (step === 3) {
-    if (!form.employmentType.trim()) errors.employmentType = 'Employment type is required.'
-    if (!form.monthlyIncome || numberOrZero(form.monthlyIncome) <= 0) errors.monthlyIncome = 'Monthly income is required.'
-    if (form.savings === '') errors.savings = 'Savings are required.'
-    if (form.existingLoans === '') errors.existingLoans = 'Existing loans are required.'
-    if (form.monthlyExpenses === '') errors.monthlyExpenses = 'Monthly expenses are required.'
-    if (form.yearsOfExperience === '' || numberOrZero(form.yearsOfExperience) < 0) errors.yearsOfExperience = 'Years of experience is required.'
-  }
-
-  if (step === 4) {
-    if (!form.creditStrength || !isValidCreditStrength(form.creditStrength)) errors.creditStrength = 'Credit strength must be between 300 and 900.'
-    if (!form.desiredLoanAmount || numberOrZero(form.desiredLoanAmount) <= 0) errors.desiredLoanAmount = 'Desired loan amount is required.'
-    if (!form.propertyBudget || numberOrZero(form.propertyBudget) <= 0) errors.propertyBudget = 'Property budget is required.'
-    if (form.downPayment === '') errors.downPayment = 'Down payment is required.'
-  }
-
+  intakeFields.slice(0, stepIndex + 1).forEach((field) => {
+    const error = validateField(field.key, form[field.key])
+    if (error) errors[field.key] = error
+  })
   return errors
 }
 
@@ -209,23 +232,9 @@ function approvalEngine(form) {
   const debt = numberOrZero(form.existingLoans)
   const expenses = numberOrZero(form.monthlyExpenses)
   const savings = numberOrZero(form.savings)
-  const downPayment = numberOrZero(form.downPayment)
   const desiredLoan = numberOrZero(form.desiredLoanAmount)
   const propertyBudget = numberOrZero(form.propertyBudget)
   const years = numberOrZero(form.yearsOfExperience)
-  const employmentType = String(form.employmentType || '').trim().toLowerCase()
-
-  if (employmentType === 'unemployed') {
-    const downPaymentRatio = propertyBudget > 0 ? downPayment / propertyBudget : 0
-    const assetSupport = savings >= 250000 || downPaymentRatio >= 0.35
-    const approvalChance = assetSupport ? 10 : 8
-
-    return {
-      approvalChance: `${approvalChance}%`,
-      estimatedLoan: currency(0),
-      risk: 'High',
-    }
-  }
 
   let approvalChance = creditStrength
 
@@ -244,7 +253,8 @@ function approvalEngine(form) {
   else if (expenses > income * 0.6) approvalChance -= 6
   else if (expenses > income * 0.5) approvalChance -= 3
 
-  if (form.employmentType === 'Salaried') approvalChance += 2
+  if (form.employmentType === 'Unemployed') approvalChance -= 20
+  else if (form.employmentType === 'Salaried') approvalChance += 2
   else if (form.employmentType === 'Business owner') approvalChance += 2
   else if (form.employmentType === 'Self-employed') approvalChance += 1
 
@@ -257,6 +267,7 @@ function approvalEngine(form) {
   const estimatedLoan = approvalChance <= 25
     ? 0
     : Math.max(0, Math.min(desiredLoan, propertyBudget * 0.85, income * 72 + savings * 1.5 - debt * 2))
+
   const risk = approvalChance >= 80 ? 'Low' : approvalChance >= 55 ? 'Medium' : 'High'
 
   return {
@@ -266,57 +277,119 @@ function approvalEngine(form) {
   }
 }
 
-function buildApprovalBases(form, engineResult) {
-  const employmentType = String(form.employmentType || '').trim()
-  const propertyBudget = numberOrZero(form.propertyBudget)
-  const downPayment = numberOrZero(form.downPayment)
-  const savings = numberOrZero(form.savings)
-  const debt = numberOrZero(form.existingLoans)
-  const creditStrength = normalizeCreditStrength(form.creditStrength)
-
-  const bases = []
-
-  bases.push(`Employment type: ${employmentType || 'Not provided'} lowers the score immediately.`)
-
-  if (creditStrength >= 800) {
-    bases.push(`Credit strength is strong at ${creditStrength}, but it does not override employment risk.`)
-  } else {
-    bases.push(`Credit strength is only ${creditStrength}, which adds pressure on approval.`)
-  }
-
-  const propertySupport = propertyBudget > 0
-    ? Math.round((downPayment / propertyBudget) * 100)
-    : 0
-  bases.push(`Property budget is ${currency(propertyBudget)} with down payment support at ${propertySupport}% and savings at ${currency(savings)}.`)
-
-  if (debt > 0) {
-    bases.push(`Existing loans of ${currency(debt)} reduce repayment headroom.`)
-  }
-
-  return bases.slice(0, 3).map((text, index) => `${index + 1}. ${text}`)
+function buildResultTitle(result) {
+  if (result.risk === 'Low') return 'Strong approval position'
+  if (result.risk === 'Medium') return 'Moderate approval position'
+  return 'Higher review risk'
 }
 
-function fieldError(errors, key) {
-  return errors[key] ? <p className="field-error">{errors[key]}</p> : null
+function fieldLabel(field) {
+  return field.label.replace(/^What is /i, 'Tell me ')
+}
+
+function getResponseHint(field) {
+  if (!field) return 'Type your answer here.'
+  if (field.key === 'age') return 'Age must be between 18 and 65.'
+  if (field.options) return 'Pick an option or type your own answer.'
+  if (field.type === 'number') return 'Type a number and press Enter.'
+  return 'Answer in a short sentence.'
+}
+
+function getQuickSuggestions(field) {
+  if (!field) return ['Generate result', 'Show approval chance', 'Change income to 9000']
+  if (field.key === 'age') return ['18', '35', '65']
+  if (field.key === 'maritalStatus') return ['Single', 'Married', 'Divorced']
+  if (field.key === 'province') return ['Ontario', 'Alberta', 'British Columbia']
+  if (field.key === 'employmentType') return ['Salaried', 'Self-employed', 'Business owner']
+  if (field.type === 'number') {
+    if (field.key === 'monthlyIncome') return ['5500', '7500', '10000']
+    if (field.key === 'savings') return ['25000', '50000', '100000']
+    if (field.key === 'creditStrength') return ['650', '720', '780']
+    if (field.key === 'dependents') return ['0', '1', '2']
+  }
+  return ['Yes', 'No', 'Not sure']
+}
+
+function parseEditableFieldUpdate(message) {
+  const match = message.match(/(?:change|update|edit|set)\s+(.+?)\s+to\s+(.+)/i)
+  if (!match) return null
+
+  const target = match[1].trim().toLowerCase()
+  const rawValue = match[2].trim()
+
+  const map = {
+    name: 'name',
+    age: 'age',
+    income: 'monthlyIncome',
+    'monthly income': 'monthlyIncome',
+    savings: 'savings',
+    loans: 'existingLoans',
+    'existing loans': 'existingLoans',
+    expenses: 'monthlyExpenses',
+    'monthly expenses': 'monthlyExpenses',
+    experience: 'yearsOfExperience',
+    'years of experience': 'yearsOfExperience',
+    'credit strength': 'creditStrength',
+    credit: 'creditStrength',
+    'loan amount': 'desiredLoanAmount',
+    'desired loan amount': 'desiredLoanAmount',
+    budget: 'propertyBudget',
+    'property budget': 'propertyBudget',
+    'down payment': 'downPayment',
+    province: 'province',
+    employment: 'employmentType',
+    'employment type': 'employmentType',
+    status: 'maritalStatus',
+    'marital status': 'maritalStatus',
+    dependents: 'dependents',
+  }
+
+  return map[target] ? { key: map[target], value: rawValue } : null
 }
 
 export default function App() {
-  const [step, setStep] = useState(1)
   const [form, setForm] = useState(initialForm)
-  const [errors, setErrors] = useState({})
-  const [status, setStatus] = useState('idle')
-  const [result, setResult] = useState(null)
-  const [eligibilityReady, setEligibilityReady] = useState(false)
-  const [showResultModal, setShowResultModal] = useState(false)
+  const [messages, setMessages] = useState([
+    {
+      id: 'welcome',
+      role: 'assistant',
+      text: 'I’ll collect your mortgage readiness details one question at a time. Answer each prompt and I’ll calculate the result when we finish.',
+    },
+  ])
+  const [draft, setDraft] = useState('')
+  const [activeFieldIndex, setActiveFieldIndex] = useState(0)
+  const [isTyping, setIsTyping] = useState(false)
   const [trainingExamples, setTrainingExamples] = useState([])
+  const [savedState, setSavedState] = useState('idle')
+  const [resultRequested, setResultRequested] = useState(false)
+  const [sidebarView, setSidebarView] = useState('overview')
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [selectedAnswers, setSelectedAnswers] = useState({})
+  const chatScrollRef = useRef(null)
+  const typingTimerRef = useRef(null)
 
   const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000'
   const exampleResult = useMemo(() => lookupExampleResult(form, trainingExamples), [form, trainingExamples])
-  const engineResult = useMemo(() => exampleResult || approvalEngine(form), [exampleResult, form])
-  const approvalBases = useMemo(() => buildApprovalBases(form, engineResult), [form, engineResult])
-  const strengthValue = normalizeCreditStrength(form.creditStrength)
-  const eligibilityErrors = useMemo(() => validateStep(4, form), [form])
-  const eligibilityComplete = Object.keys(eligibilityErrors).length === 0
+  const approvalResult = useMemo(() => exampleResult || approvalEngine(form), [exampleResult, form])
+  const intakeComplete = activeFieldIndex >= intakeFields.length
+  const currentField = intakeFields[activeFieldIndex]
+  const currentErrors = useMemo(() => validateStep(activeFieldIndex, form), [activeFieldIndex, form])
+  const hasConversationStarted = messages.some((message) => message.role === 'user')
+  const sidebarHighlights = [
+    { x: '10%', y: '18%' },
+    { x: '42%', y: '36%' },
+    { x: '74%', y: '22%' },
+    { x: '22%', y: '66%' },
+    { x: '64%', y: '58%' },
+    { x: '50%', y: '82%' },
+  ]
+  const sidebarNav = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'faq', label: 'FAQs' },
+    { id: 'read-doc', label: 'Read Document' },
+  ]
+  const chatProgress = Math.max(0, messages.length - 1)
+  const heroScale = Math.max(0.74, Math.min(1.12, 1.12 - chatProgress * 0.022))
 
   useEffect(() => {
     const controller = new AbortController()
@@ -327,663 +400,463 @@ export default function App() {
         return response.json()
       })
       .then((data) => {
-        if (Array.isArray(data.examples)) {
-          setTrainingExamples(data.examples)
-        }
+        if (Array.isArray(data.examples)) setTrainingExamples(data.examples)
       })
-      .catch(() => {
-        setTrainingExamples([])
-      })
+      .catch(() => setTrainingExamples([]))
 
     return () => controller.abort()
   }, [apiBaseUrl])
 
   useEffect(() => {
-    setEligibilityReady(step === 4 && eligibilityComplete)
-  }, [eligibilityComplete, step])
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
+    }
+  }, [messages, isTyping, approvalResult, intakeComplete])
 
-  const updateField = (event) => {
-    const { name, value } = event.target
-    setForm((current) => ({ ...current, [name]: value }))
-    if (errors[name]) {
-      setErrors((current) => {
-        const next = { ...current }
-        delete next[name]
-        return next
-      })
+  useEffect(() => {
+    if (hasConversationStarted) setMobileMenuOpen(false)
+  }, [hasConversationStarted])
+
+  useEffect(() => () => {
+    if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current)
+  }, [])
+
+  const pushMessage = (role, text) => {
+    setMessages((current) => [
+      ...current,
+      {
+        id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        role,
+        text,
+      },
+    ])
+  }
+
+  const queueAssistantReply = (text, delay = 260, afterReply) => {
+    setIsTyping(true)
+    if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current)
+    typingTimerRef.current = window.setTimeout(() => {
+      setIsTyping(false)
+      pushMessage('assistant', text)
+      if (afterReply) afterReply()
+    }, delay)
+  }
+
+  const setFieldValue = (key, value) => {
+    setForm((current) => ({ ...current, [key]: value }))
+    setSelectedAnswers((current) => ({ ...current, [key]: value }))
+    setSavedState('idle')
+  }
+
+  const askNextQuestion = (nextIndex) => {
+    const nextField = intakeFields[nextIndex]
+    if (!nextField) return
+    queueAssistantReply(fieldLabel(nextField), 320, () => {
+      setActiveFieldIndex(nextIndex)
+    })
+  }
+
+  const summarizeResult = () => `Your mortgage result is ready. Approval chance is ${approvalResult.approvalChance}, estimated loan is ${approvalResult.estimatedLoan}, and risk is ${approvalResult.risk}.`
+
+  const isResultRequest = (message) => /\b(generate|show|create|build|make|download)\b.*\b(result|report|pdf|script)\b|\bresult\s+script\b|\bshow\s+me\s+the\s+result\b/i.test(message)
+
+  const isFieldUpdateRequest = (message) => /\b(change|update|edit|set)\b|\bmarried\b|\bsingle\b|\bdivorced\b|\bcommon law\b|\bwidowed\b|\bincome\b|\bsavings\b|\bcredit\b|\bage\b|\bprovince\b|\bemployment\b|\bloan\b|\bbudget\b|\bdown payment\b/i.test(message)
+
+  const parseFollowUpUpdates = (message) => {
+    const updates = []
+    const lowerMessage = message.toLowerCase()
+
+    const pushUpdate = (key, value) => {
+      if (!value) return
+      if (updates.some((item) => item.key === key)) return
+      updates.push({ key, value })
+    }
+
+    if (/\bcommon law\b/.test(lowerMessage)) pushUpdate('maritalStatus', 'Common Law')
+    else if (/\bwidowed\b/.test(lowerMessage)) pushUpdate('maritalStatus', 'Widowed')
+    else if (/\bdivorced\b/.test(lowerMessage)) pushUpdate('maritalStatus', 'Divorced')
+    else if (/\bmarried\b/.test(lowerMessage)) pushUpdate('maritalStatus', 'Married')
+    else if (/\bsingle\b/.test(lowerMessage)) pushUpdate('maritalStatus', 'Single')
+
+    const optionFields = [
+      ['province', intakeFields.find((field) => field.key === 'province')?.options || []],
+      ['employmentType', intakeFields.find((field) => field.key === 'employmentType')?.options || []],
+    ]
+
+    optionFields.forEach(([key, options]) => {
+      for (const option of options) {
+        if (new RegExp(`\\b${option.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(lowerMessage)) {
+          pushUpdate(key, option)
+          break
+        }
+      }
+    })
+
+    const numberFieldPatterns = [
+      ['age', /\bage(?:\s+is|\s*=|\s+to|\s+at|\s*:)\s*([0-9][0-9,]*)/i],
+      ['dependents', /\bdependents?(?:\s+is|\s*=|\s+to|\s*:)\s*([0-9][0-9,]*)/i],
+      ['monthlyIncome', /\bincome(?:\s+is|\s*=|\s+to|\s+now|\s*:)\s*([$0-9,]+(?:\.[0-9]+)?)?/i],
+      ['savings', /\bsavings?(?:\s+is|\s*=|\s+to|\s*:)\s*([$0-9,]+(?:\.[0-9]+)?)?/i],
+      ['existingLoans', /\bloans?(?:\s+is|\s*=|\s+to|\s*:)\s*([$0-9,]+(?:\.[0-9]+)?)?/i],
+      ['monthlyExpenses', /\bexpenses?(?:\s+is|\s*=|\s+to|\s*:)\s*([$0-9,]+(?:\.[0-9]+)?)?/i],
+      ['yearsOfExperience', /\bexperience(?:\s+is|\s*=|\s+to|\s*:)\s*([0-9][0-9,]*)/i],
+      ['creditStrength', /\bcredit(?:\s+strength|\s+score)?(?:\s+is|\s*=|\s+to|\s*:)\s*([0-9][0-9,]*)/i],
+      ['desiredLoanAmount', /\bloan(?:\s+amount)?(?:\s+is|\s*=|\s+to|\s*:)\s*([$0-9,]+(?:\.[0-9]+)?)?/i],
+      ['propertyBudget', /\bbudget(?:\s+is|\s*=|\s+to|\s*:)\s*([$0-9,]+(?:\.[0-9]+)?)?/i],
+      ['downPayment', /\bdown payment(?:\s+is|\s*=|\s+to|\s*:)\s*([$0-9,]+(?:\.[0-9]+)?)?/i],
+    ]
+
+    numberFieldPatterns.forEach(([key, pattern]) => {
+      const match = message.match(pattern)
+      if (match?.[1]) {
+        pushUpdate(key, match[1].replace(/[$,]/g, '').trim())
+      }
+    })
+
+    const fallback = parseEditableFieldUpdate(message)
+    if (fallback && updates.length === 0) pushUpdate(fallback.key, fallback.value)
+
+    return updates
+  }
+
+  const acknowledgeResult = (includePdf = false) => {
+    const resultText = summarizeResult()
+    pushMessage('assistant', resultText)
+    if (includePdf) {
+      saveResultToDevice()
     }
   }
 
-  const goNext = () => {
-    const nextErrors = validateStep(step, form)
-    setErrors(nextErrors)
-    if (Object.keys(nextErrors).length > 0) return
-    setStep((current) => Math.min(4, current + 1))
+  const handleFieldAnswer = (rawValue) => {
+    const field = currentField
+    if (!field) return
+
+    const cleaned = String(rawValue ?? '').trim()
+    if (!cleaned) return
+
+    const error = validateField(field.key, cleaned)
+    if (error) {
+      pushMessage('assistant', error)
+      return
+    }
+
+    pushMessage('user', cleaned)
+    setFieldValue(field.key, cleaned)
+
+    const nextIndex = activeFieldIndex + 1
+    if (nextIndex < intakeFields.length) {
+      askNextQuestion(nextIndex)
+    } else {
+      setActiveFieldIndex(nextIndex)
+      queueAssistantReply('All 15 questions are complete. You can ask follow-up questions, change any field, or type “generate result” whenever you want.', 420)
+    }
   }
 
-  const goBack = () => {
-    setStatus('idle')
-    setResult(null)
-    setShowResultModal(false)
-    setStep((current) => Math.max(1, current - 1))
+  const handleChatText = (rawText) => {
+    if (isTyping) return
+
+    const nextInput = String(rawText || '').trim()
+    setDraft('')
+    if (!nextInput) return
+
+    if (!intakeComplete) {
+      handleFieldAnswer(nextInput)
+      return
+    }
+
+    pushMessage('user', nextInput)
+
+    if (isResultRequest(nextInput)) {
+      setResultRequested(true)
+      const wantsPdf = /\b(pdf|download|script)\b/i.test(nextInput)
+      acknowledgeResult(wantsPdf)
+      return
+    }
+
+    const updates = parseFollowUpUpdates(nextInput)
+    if (updates.length > 0) {
+      updates.forEach((update) => setFieldValue(update.key, update.value))
+      const summary = updates
+        .map((update) => `${update.key.replace(/([A-Z])/g, ' $1').toLowerCase()} is now ${update.value}`)
+        .join(', ')
+      pushMessage('assistant', resultRequested ? `Updated ${summary}. ${summarizeResult()}` : `Updated ${summary}. Ask me to generate the result when you are ready.`)
+      return
+    }
+
+    const normalized = nextInput.toLowerCase()
+    if (/approval|chance|percent/.test(normalized)) {
+      pushMessage('assistant', `Based on the current answers, your estimated approval chance is ${approvalResult.approvalChance}.`)
+      return
+    }
+    if (/loan|eligible|borrow/.test(normalized)) {
+      pushMessage('assistant', `Your estimated loan amount is ${approvalResult.estimatedLoan}. The current risk level is ${approvalResult.risk}.`)
+      return
+    }
+    if (/risk|score/.test(normalized)) {
+      pushMessage('assistant', `The mortgage profile is currently marked as ${approvalResult.risk} risk. Credit strength and income stability are the biggest drivers.`)
+      return
+    }
+
+    pushMessage('assistant', intakeComplete ? 'Ask me to generate the result, download the PDF, or change any previous answer.' : 'I can explain your mortgage result, estimate eligibility, or update any captured field.')
   }
 
-  const closeResultModal = () => setShowResultModal(false)
+  const handleSubmit = (event) => {
+    event.preventDefault()
+    handleChatText(draft)
+  }
+
+  const handleOptionClick = (option) => {
+    if (isTyping) return
+    handleFieldAnswer(option)
+  }
+
+  const handleSuggestionClick = (value) => {
+    if (isTyping) return
+    handleChatText(value)
+  }
 
   const saveResultToDevice = () => {
-    if (!result) return
-
     const record = {
-      ...result,
-      savedAt: new Date().toISOString(),
-    }
-    const fileName = `${(result.personalInfo?.name || 'proposal-record')
-      .toString()
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-') || 'proposal-record'}-training.json`
-
-    const pdf = new jsPDF({ unit: 'mm', format: 'a4' })
-    const pageWidth = pdf.internal.pageSize.getWidth()
-    const marginX = 14
-    const marginTop = 16
-    const contentWidth = pageWidth - marginX * 2
-    const columnGap = 10
-    const columnWidth = (contentWidth - columnGap) / 2
-    let cursorY = marginTop
-
-    const addHeading = (text, size = 18) => {
-      pdf.setFont('helvetica', 'bold')
-      pdf.setFontSize(size)
-      pdf.setTextColor(15, 23, 42)
-      pdf.text(text, marginX, cursorY)
-      cursorY += size * 0.7 + 6
-    }
-
-    const addBody = (text, size = 11, lineGap = 5.6, font = 'helvetica', style = 'normal') => {
-      pdf.setFont(font, style)
-      pdf.setFontSize(size)
-      pdf.setTextColor(30, 41, 59)
-      const lines = pdf.splitTextToSize(text, columnWidth)
-      pdf.text(lines, marginX, cursorY)
-      cursorY += lines.length * lineGap + 4
-    }
-
-    const addSectionTitle = (text) => {
-      pdf.setFont('helvetica', 'bold')
-      pdf.setFontSize(12)
-      pdf.setTextColor(15, 118, 110)
-      pdf.text(text, marginX, cursorY)
-      cursorY += 6
-    }
-
-    addHeading('Training-ready proposal record')
-    addBody('Approval result summary and saved proposal data for client review.', 11, 5.5)
-
-    pdf.setFillColor(15, 23, 42)
-    pdf.roundedRect(marginX, cursorY, contentWidth, 34, 4, 4, 'F')
-    pdf.setTextColor(255, 255, 255)
-    pdf.setFont('helvetica', 'normal')
-
-    const summaryColumns = [
-      { label: 'Approval Chance', value: record.approvalEngine?.approvalChance || engineResult.approvalChance },
-      { label: 'Estimated Loan', value: record.approvalEngine?.estimatedLoan || engineResult.estimatedLoan },
-      { label: 'Risk', value: record.approvalEngine?.risk || engineResult.risk },
-    ]
-
-    summaryColumns.forEach((item, index) => {
-      const columnX = marginX + (contentWidth / 3) * index + 4
-      pdf.setFontSize(9)
-      pdf.text(item.label.toUpperCase(), columnX, cursorY + 8)
-      pdf.setFont('helvetica', 'bold')
-      pdf.setFontSize(16)
-      pdf.text(String(item.value), columnX, cursorY + 20)
-      pdf.setFont('helvetica', 'normal')
-    })
-
-    cursorY += 42
-
-    const sections = [
-      {
-        title: 'Personal info',
-        lines: [
-          `Name: ${record.personalInfo?.name || ''}`,
-          `Age: ${record.personalInfo?.age || ''}`,
-          `Marital Status: ${record.personalInfo?.maritalStatus || ''}`,
-          `Dependents: ${record.personalInfo?.dependents || ''}`,
-          `Province: ${record.personalInfo?.province || ''}`,
-        ],
-      },
-      {
-        title: 'Income structure',
-        lines: [
-          `Employment Type: ${record.incomeStructure?.employmentType || ''}`,
-          `Monthly Income: ${currency(record.incomeStructure?.monthlyIncome || 0)}`,
-          `Savings: ${currency(record.incomeStructure?.savings || 0)}`,
-          `Existing Loans: ${currency(record.incomeStructure?.existingLoans || 0)}`,
-          `Monthly Expenses: ${currency(record.incomeStructure?.monthlyExpenses || 0)}`,
-          `Years of Experience: ${record.incomeStructure?.yearsOfExperience || ''}`,
-        ],
-      },
-      {
-        title: 'Credit eligibility',
-        lines: [
-          `Credit Strength: ${record.creditEligibility?.creditStrength || ''}%`,
-          `Desired Loan Amount: ${currency(record.creditEligibility?.desiredLoanAmount || 0)}`,
-          `Property Budget: ${currency(record.creditEligibility?.propertyBudget || 0)}`,
-          `Down Payment: ${currency(record.creditEligibility?.downPayment || 0)}`,
-        ],
-      },
-      {
-        title: 'Result',
-        lines: [
-          `Approval Chance: ${record.approvalEngine?.approvalChance || engineResult.approvalChance}`,
-          `Estimated Loan: ${record.approvalEngine?.estimatedLoan || engineResult.estimatedLoan}`,
-          `Risk: ${record.approvalEngine?.risk || engineResult.risk}`,
-          `Created At: ${record.createdAt || ''}`,
-          `Saved To MongoDb: ${String(record.savedToMongoDb ?? false)}`,
-          `Saved At: ${record.savedAt || ''}`,
-        ],
-      },
-    ]
-
-    const leftX = marginX
-    const rightX = marginX + columnWidth + columnGap
-    const sectionTop = cursorY
-
-    sections.forEach((section, index) => {
-      const sectionX = index % 2 === 0 ? leftX : rightX
-      const sectionY = index < 2 ? sectionTop : sectionTop + 62
-      pdf.setDrawColor(226, 232, 240)
-      pdf.setFillColor(248, 250, 252)
-      pdf.roundedRect(sectionX, sectionY, columnWidth, 56, 3, 3, 'FD')
-      pdf.setFont('helvetica', 'bold')
-      pdf.setFontSize(11)
-      pdf.setTextColor(15, 118, 110)
-      pdf.text(section.title.toUpperCase(), sectionX + 4, sectionY + 7)
-      pdf.setFont('helvetica', 'normal')
-      pdf.setFontSize(9)
-      pdf.setTextColor(30, 41, 59)
-      let lineY = sectionY + 14
-      section.lines.forEach((line) => {
-        const wrapped = pdf.splitTextToSize(line, columnWidth - 8)
-        wrapped.forEach((wrappedLine) => {
-          pdf.text(wrappedLine, sectionX + 4, lineY)
-          lineY += 4.4
-        })
-      })
-    })
-
-    pdf.save(fileName.replace(/\.json$/i, '.pdf'))
-    setShowResultModal(false)
-  }
-
-  const submitApplication = async (event) => {
-    event.preventDefault()
-    const nextErrors = validateStep(4, form)
-    setErrors(nextErrors)
-    if (Object.keys(nextErrors).length > 0) return
-
-    setStatus('saving')
-
-    const payload = {
+      approvalEngine: approvalResult,
       personalInfo: {
-        name: form.name.trim(),
-        age: numberOrZero(form.age),
-        maritalStatus: form.maritalStatus.trim(),
-        dependents: numberOrZero(form.dependents),
+        name: form.name,
+        age: form.age,
+        maritalStatus: form.maritalStatus,
+        dependents: form.dependents,
         province: form.province,
       },
       incomeStructure: {
         employmentType: form.employmentType,
-        monthlyIncome: numberOrZero(form.monthlyIncome),
-        savings: numberOrZero(form.savings),
-        existingLoans: numberOrZero(form.existingLoans),
-        monthlyExpenses: numberOrZero(form.monthlyExpenses),
-        yearsOfExperience: numberOrZero(form.yearsOfExperience),
+        monthlyIncome: form.monthlyIncome,
+        savings: form.savings,
+        existingLoans: form.existingLoans,
+        monthlyExpenses: form.monthlyExpenses,
+        yearsOfExperience: form.yearsOfExperience,
       },
       creditEligibility: {
-        creditStrength: numberOrZero(form.creditStrength),
-        desiredLoanAmount: numberOrZero(form.desiredLoanAmount),
-        propertyBudget: numberOrZero(form.propertyBudget),
-        downPayment: numberOrZero(form.downPayment),
+        creditStrength: form.creditStrength,
+        desiredLoanAmount: form.desiredLoanAmount,
+        propertyBudget: form.propertyBudget,
+        downPayment: form.downPayment,
       },
-      approvalEngine: engineResult,
-      createdAt: new Date().toISOString(),
+      savedAt: new Date().toISOString(),
+      exampleMatched: Boolean(exampleResult),
     }
 
-    const immediateResult = {
-      ...payload,
-      approvalEngine: engineResult,
-      savedToMongoDb: false,
-    }
+    const fileName = `${(form.name || 'mortgage-readiness').toString().trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'mortgage-readiness'}-result.pdf`
+    const pdf = new jsPDF({ unit: 'mm', format: 'a4' })
+    const marginX = 14
+    let cursorY = 18
+    const pageWidth = pdf.internal.pageSize.getWidth()
+    const contentWidth = pageWidth - marginX * 2
 
-    setResult(immediateResult)
-    setShowResultModal(true)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(18)
+    pdf.text('Mortgage readiness result', marginX, cursorY)
+    cursorY += 10
 
-    try {
-      const response = await fetch(`${apiBaseUrl}/api/applications`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      })
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(11)
+    pdf.text(`Approval chance: ${approvalResult.approvalChance}`, marginX, cursorY)
+    cursorY += 6
+    pdf.text(`Estimated loan: ${approvalResult.estimatedLoan}`, marginX, cursorY)
+    cursorY += 6
+    pdf.text(`Risk: ${approvalResult.risk}`, marginX, cursorY)
+    cursorY += 10
 
-      if (!response.ok) {
-        throw new Error('Failed to save application.')
-      }
-
-      const saved = await response.json()
-      setResult({ ...immediateResult, ...saved, savedToMongoDb: true })
-      setStatus('saved')
-    } catch (error) {
-      setStatus('offline')
-    }
+    const lines = pdf.splitTextToSize(JSON.stringify(record, null, 2), contentWidth)
+    pdf.text(lines, marginX, cursorY)
+    pdf.save(fileName)
+    setSavedState('saved')
   }
 
   return (
     <div className="app-shell">
       <div className="app-backdrop" />
-      <div className="app-container">
-        <header className="hero-card">
-          <div className="hero-copy">
-            <div className="eyebrow">Canada mortgage intake</div>
-            <h1>Locked-step application flow for client onboarding</h1>
-            
-          </div>
 
-          <div className="hero-stats">
-            <div><span>Clients</span><strong>{form.name ? '1' : '—'}</strong></div>
-            <div><span>Region</span><strong>Canada</strong></div>
-            <div><span>Mode</span><strong>Guided intake</strong></div>
-        <div><span>Score range</span><strong>300-900</strong></div>
-          </div>
+      <div className="app-frame">
+        <header className="topbar">
+          <button type="button" className="icon-only mobile-menu-toggle" aria-label="Open menu" onClick={() => setMobileMenuOpen((current) => !current)}>
+            ☰
+          </button>
         </header>
 
-        <nav className="mini-steps" aria-label="Form steps">
-          {stepMeta.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className={`mini-step ${s.id === step ? 'active' : ''} ${s.id < step ? 'complete' : ''}`}
-              onClick={() => { if (s.id <= step) setStep(s.id) }}
-            >
-              {s.title}
-            </button>
-          ))}
-        </nav>
+        <div className={`drawer-backdrop ${mobileMenuOpen ? 'open' : ''}`} onClick={() => setMobileMenuOpen(false)} />
 
-        <main className="content-grid">
-          <section className="form-card">
-            {step === 1 && (
-              <div className="form-grid">
-                <div className="section-head">
-                  <h2>Overview</h2>
-                  <p>
-                    A production-ready mortgage intake flow tailored for Canadian clients —
-                    collects verified profile details, income evidence, and credit indicators,
-                    and generates a concise, presentation-ready readiness report for advisors.
-                  </p>
-                </div>
+        <aside className={`sidebar-panel ${mobileMenuOpen ? 'open' : ''}`}>
+          <div className="sidebar-inner">
+            <div className="sidebar-brand-row">
+              <div className="sidebar-brand-badge" aria-hidden="true">
+                <span />
+              </div>
+              <div className="sidebar-brand-copy">
+                <strong>Mortgage Assistant</strong>
+                <span>Track readiness by chatting naturally.</span>
+              </div>
+              <button type="button" className="icon-only mobile-close sidebar-close" aria-label="Close menu" onClick={() => setMobileMenuOpen(false)}>✕</button>
+            </div>
 
-                <div className="overview-grid">
-                  <article className="overview-panel premium">
-                    <div className="overview-label">What this does</div>
-                    <h3>Structured intake and readiness report</h3>
-                    <p>
-                      Guides the client through verified data capture (profile, income, liabilities),
-                      runs deterministic eligibility checks, and produces a compact advisor-facing
-                      readiness summary suitable for underwriting handoff or client proposals.
-                    </p>
-                  </article>
+            <div className="hero-copy-card hero-copy-overview">
+              <div className="section-head-row">
+                <span className="eyebrow">Overview</span>
+                <span className="section-side-text">Quick guide</span>
+              </div>
+              {sidebarView === 'overview' && (
+                <>
+                  <h2>Simple, guided, mortgage-first chat.</h2>
+                  <p>Only the overview and FAQ content stays in the side rail. The rest of the screen is reserved for the live chat and result flow.</p>
+                </>
+              )}
+              {sidebarView === 'read-doc' && (
+                <>
+                  <h2>Read Document</h2>
+                  <p>Use the chat to answer step by step, then ask the assistant to generate or download the result whenever you are ready.</p>
+                </>
+              )}
+            </div>
 
-                  <article className="overview-panel">
-                    <div className="overview-label">Why it helps in production</div>
-                    <ul>
-                      <li>Localized choices (province, employment types) reduce client confusion.</li>
-                      <li>Deterministic scoring provides consistent, auditable eligibility signals.</li>
-                      <li>Locked progression improves data completeness and reduces follow-up.</li>
-                      <li>Compact report output is ready for advisor review or downstream systems.</li>
-                    </ul>
-                  </article>
-
-                  <article className="overview-panel">
-                    <div className="overview-label">Process</div>
-                    <ol>
-                      <li>Overview (client guidance)</li>
-                      <li>Personal Info (identity & contact)</li>
-                      <li>Income Structure (verified income & expenses)</li>
-                      <li>Credit + Eligibility (scoring & recommendation)</li>
-                      <li>FAQ & next steps</li>
-                    </ol>
-                  </article>
-                </div>
-
-                <div className="action-row">
-                  <button type="button" className="primary-btn" onClick={() => setStep(2)}>
-                    Begin intake
+            <div className="hero-copy-card hero-copy-faq">
+              <div className="section-head-row">
+                <span className="eyebrow">FAQs</span>
+                <span className="section-side-text">3 common questions</span>
+              </div>
+              <div className="hero-faq-stack">
+                {faqItems.slice(0, 3).map((item) => (
+                  <button key={item.question} type="button" className="hero-faq-btn">
+                    <span>{item.question}</span>
                   </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <main className="app-stage">
+          {!hasConversationStarted && (
+            <section className="hero-stage-shell" style={{ '--hero-scale': heroScale }}>
+            <section className="hero-preview-card hero-stage-card">
+              <div className="hero-preview-top">
+                <div className="hero-preview-dot" aria-hidden="true" />
+                <span>Mortgage Assistant</span>
+                <div className="hero-preview-square" aria-hidden="true" />
+              </div>
+
+              <div className="hero-mini-card">
+                <div className="hero-icon" aria-hidden="true">
+                  <svg width="32" height="32" viewBox="0 0 34 34" fill="none">
+                    <path d="M17 8L19.5 14L26 14L21 18L23 24.5L17 21L11 24.5L13 18L8 14L14.5 14Z" stroke="#ff5a00" strokeWidth="1.4" strokeLinejoin="round" fill="none" />
+                    <circle cx="17" cy="17" r="3" fill="#ff5a00" opacity="0.85" />
+                    <line x1="17" y1="4" x2="17" y2="7" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
+                    <line x1="17" y1="27" x2="17" y2="30" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
+                    <line x1="4" y1="17" x2="7" y2="17" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
+                    <line x1="27" y1="17" x2="30" y2="17" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                </div>
+                <h1>Mortgage Assistant</h1>
+                <p>Track mortgage readiness by typing naturally.</p>
+              </div>
+
+              <div className="hero-network-actions" role="tablist" aria-label="Hero sections">
+                {sidebarNav.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`hero-network-action ${sidebarView === item.id ? 'active' : ''}`}
+                    onClick={() => setSidebarView(item.id)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="hero-network">
+                <div className="hero-network-dots" aria-hidden="true">
+                  {sidebarHighlights.map((item, index) => (
+                    <span key={`${item.x}-${item.y}-${index}`} className="hero-network-node" style={{ left: item.x, top: item.y }} />
+                  ))}
                 </div>
               </div>
-            )}
+            </section>
+            </section>
+          )}
 
-            {step === 2 && (
-              <form className="form-grid" onSubmit={(event) => { event.preventDefault(); goNext(); }}>
-                <div className="section-head">
-                  <h2>Personal Info</h2>
-                  <p>Fill this page fully before the next page unlocks.</p>
-                </div>
+          <section className={`chat-card mobile-shell ${hasConversationStarted ? 'chat-active' : 'chat-idle'}`}>
 
-                <label>
-                  <span>Name</span>
-                  <input name="name" value={form.name} onChange={updateField} placeholder="John Doe" />
-                  {fieldError(errors, 'name')}
-                </label>
+            <div className="chat-stream mobile-chat-stream" ref={chatScrollRef}>
+              {messages.map((message) => (
+                <article key={message.id} className={`chat-bubble ${message.role}`}>
+                  <p>{message.text}</p>
+                </article>
+              ))}
 
-                <div className="two-col">
-                  <label>
-                    <span>Age</span>
-                    <input name="age" type="number" value={form.age} onChange={updateField} placeholder="32" />
-                    {fieldError(errors, 'age')}
-                  </label>
+              {isTyping && (
+                <article className="chat-bubble assistant typing">
+                  <div className="typing-dots" aria-label="Assistant is typing">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                </article>
+              )}
 
-                  <label>
-                    <span>Dependents</span>
-                    <input name="dependents" type="number" value={form.dependents} onChange={updateField} placeholder="2" />
-                    {fieldError(errors, 'dependents')}
-                  </label>
-                </div>
-
-                <div className="two-col">
-                  <label>
-                    <span>Marital Status</span>
-                    <select name="maritalStatus" value={form.maritalStatus} onChange={updateField}>
-                      <option value="">Select marital status</option>
-                      <option value="Single">Single</option>
-                      <option value="Married">Married</option>
-                      <option value="Common Law">Common Law</option>
-                      <option value="Divorced">Divorced</option>
-                      <option value="Widowed">Widowed</option>
-                    </select>
-                    {fieldError(errors, 'maritalStatus')}
-                  </label>
-
-                  <label>
-                    <span>Province</span>
-                    <select name="province" value={form.province} onChange={updateField}>
-                      {provinceOptions.map((province) => (
-                        <option key={province} value={province}>{province}</option>
-                      ))}
-                    </select>
-                    {fieldError(errors, 'province')}
-                  </label>
-                </div>
-
-                <div className="action-row">
-                  <button type="button" className="secondary-btn" onClick={goBack}>
-                    Back to Overview
-                  </button>
-                  <button type="submit" className="primary-btn">
-                    Continue to Income Structure
-                  </button>
-                </div>
-              </form>
-            )}
-
-            {step === 3 && (
-              <form className="form-grid" onSubmit={(event) => { event.preventDefault(); goNext(); }}>
-                <div className="section-head">
-                  <h2>Income Structure</h2>
-                  <p>Use Canadian salary and expense values that reflect the applicant's real budget.</p>
-                </div>
-
-                <label>
-                  <span>Employment Type</span>
-                  <select name="employmentType" value={form.employmentType} onChange={updateField}>
-                    {employmentOptions.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
-                  {fieldError(errors, 'employmentType')}
-                </label>
-
-                <div className="two-col">
-                  <label>
-                    <span>Monthly Income (CAD)</span>
-                    <input name="monthlyIncome" type="number" value={form.monthlyIncome} onChange={updateField} placeholder="8500" />
-                    {fieldError(errors, 'monthlyIncome')}
-                  </label>
-
-                  <label>
-                    <span>Savings (CAD)</span>
-                    <input name="savings" type="number" value={form.savings} onChange={updateField} placeholder="40000" />
-                    {fieldError(errors, 'savings')}
-                  </label>
-                </div>
-
-                <div className="two-col">
-                  <label>
-                    <span>Existing Loans (monthly CAD)</span>
-                    <input name="existingLoans" type="number" value={form.existingLoans} onChange={updateField} placeholder="1200" />
-                    {fieldError(errors, 'existingLoans')}
-                  </label>
-
-                  <label>
-                    <span>Monthly Expenses (CAD)</span>
-                    <input name="monthlyExpenses" type="number" value={form.monthlyExpenses} onChange={updateField} placeholder="3000" />
-                    {fieldError(errors, 'monthlyExpenses')}
-                  </label>
-                </div>
-
-                <label>
-                  <span>Years of Experience</span>
-                  <input name="yearsOfExperience" type="number" value={form.yearsOfExperience} onChange={updateField} placeholder="5" />
-                  {fieldError(errors, 'yearsOfExperience')}
-                </label>
-
-                <div className="note-box">
-                  <strong>Canada-specific guidance</strong>
-                  <p>
-                    Salaried and self-employed applicants are assessed differently. Keep the numbers realistic and in CAD.
-                  </p>
-                </div>
-
-                <div className="action-row">
-                  <button type="button" className="secondary-btn" onClick={goBack}>
-                    Back
-                  </button>
-                  <button type="submit" className="primary-btn">
-                    Continue to Credit + Eligibility
-                  </button>
-                </div>
-              </form>
-            )}
-
-            {step === 4 && (
-              <form className="form-grid" onSubmit={submitApplication}>
-                <div className="section-head">
-                  <h2>Credit + Eligibility</h2>
-                  <p>We calculate approval chance with a simple engine. No bank APIs are needed.</p>
-                </div>
-
-                <div className="two-col">
-                  <label>
-                    <span>Approximate Credit Strength (Canada 300-900)</span>
-                    <input name="creditStrength" type="number" value={form.creditStrength} onChange={updateField} placeholder="778" min="300" max="900" />
-                    {fieldError(errors, 'creditStrength')}
-                  </label>
-
-                  <label>
-                    <span>Desired Loan Amount (CAD)</span>
-                    <input name="desiredLoanAmount" type="number" value={form.desiredLoanAmount} onChange={updateField} placeholder="500000" />
-                    {fieldError(errors, 'desiredLoanAmount')}
-                  </label>
-                </div>
-
-                <div className="two-col">
-                  <label>
-                    <span>Property Budget (CAD)</span>
-                    <input name="propertyBudget" type="number" value={form.propertyBudget} onChange={updateField} placeholder="650000" />
-                    {fieldError(errors, 'propertyBudget')}
-                  </label>
-
-                  <label>
-                    <span>Down Payment (CAD)</span>
-                    <input name="downPayment" type="number" value={form.downPayment} onChange={updateField} placeholder="65000" />
-                    {fieldError(errors, 'downPayment')}
-                  </label>
-                </div>
-
-                {!eligibilityComplete && (
-                  <div className="loading-strip" aria-live="polite">
-                    <span className="spinner" aria-hidden="true" />
+              {intakeComplete && resultRequested && (
+                <section className="result-panel">
+                  <div className="result-head">
+                    <span className="eyebrow">Result</span>
+                    <h3>{buildResultTitle(approvalResult)}</h3>
+                  </div>
+                  <div className="result-grid">
                     <div>
-                      <strong>Loading eligibility check</strong>
-                      <p>Fill all Credit + Eligibility fields to unlock submit.</p>
+                      <span>Approval chance</span>
+                      <strong>{approvalResult.approvalChance}</strong>
+                    </div>
+                    <div>
+                      <span>Estimated loan</span>
+                      <strong>{approvalResult.estimatedLoan}</strong>
+                    </div>
+                    <div>
+                      <span>Risk</span>
+                      <strong>{approvalResult.risk}</strong>
                     </div>
                   </div>
-                )}
-
-                {eligibilityComplete && !eligibilityReady && (
-                  <div className="loading-strip" aria-live="polite">
-                    <span className="spinner" aria-hidden="true" />
-                    <div>
-                      <strong>Preparing submit</strong>
-                      <p>Checking the loan profile and building the proposal record.</p>
-                    </div>
+                  <div className="result-meta">
+                    <p>Any follow-up edit updates this result instantly. Ask to regenerate the PDF when you are ready.</p>
+                    <button type="button" className="result-action" onClick={() => saveResultToDevice()}>
+                      Generate PDF
+                    </button>
                   </div>
-                )}
-
-                <div className="action-row">
-                  <button type="button" className="secondary-btn" onClick={goBack}>
-                    Back
+                </section>
+              )}
+            </div>
+            <div className="bottom-area">
+              <div className="suggestions">
+                {getQuickSuggestions(currentField).map((item) => (
+                  <button key={item} type="button" className="chip" onClick={() => handleSuggestionClick(item)}>
+                    {item}
                   </button>
-                    <button type="submit" className="primary-btn" disabled={status === 'saving' || !eligibilityReady}>
-                      {status === 'saving' ? 'Saving...' : 'Submit proposal'}
-                  </button>
-                </div>
-
-                  {status === 'saved' && result && (
-                    <div className="success-box">
-                      Saved successfully. You can review the result window and submit again after editing the fields.
-                    </div>
-                  )}
-
-                  {status === 'offline' && result && (
-                    <div className="warning-box">
-                      Save failed; the proposal data is still visible in the result window and can be retried.
-                    </div>
-                  )}
-              </form>
-            )}
-
-            {step === 5 && (
-              <div className="form-grid">
-                <div className="section-head">
-                  <h2>FAQ</h2>
-                  <p>Common questions your client may ask before approval.</p>
-                </div>
-
-                <div className="faq-list">
-                  <article>
-                    <h3>Why is credit shown as a percentage?</h3>
-                    <p>The proposal now uses a score strength meter so the client sees progress more intuitively.</p>
-                  </article>
-                  <article>
-                    <h3>Can the data still be saved?</h3>
-                    <p>Yes. The backend can store the application record and later be replaced with any storage layer you prefer.</p>
-                  </article>
-                  <article>
-                    <h3>What makes this Canada-specific?</h3>
-                    <p>Province selection, Canadian income guidance, and lender-style approval logic are tailored for Canada.</p>
-                  </article>
-                </div>
-
-                <div className="action-row">
-                  <button type="button" className="secondary-btn" onClick={() => setStep(4)}>
-                    Back to Credit
-                  </button>
-                  <button type="button" className="primary-btn" onClick={() => setStep(2)}>
-                    Review from Start
-                  </button>
-                </div>
+                ))}
               </div>
-            )}
+
+              <form className="input-bar" onSubmit={handleSubmit}>
+                <input
+                  type="text"
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder={currentField ? currentField.placeholder || currentField.label : 'Type a follow-up question...'}
+                />
+                <button type="submit" className="send-btn" aria-label="Send message">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13" />
+                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                  </svg>
+                </button>
+              </form>
+
+              {savedState === 'saved' && <div className="status-pill success">Saved to device</div>}
+            </div>
           </section>
-
-          <aside className="side-card">
-            <div className="side-section">
-              <span>Data quality</span>
-              <p>Each step enforces required fields so the intake produces complete, advisor-ready records.</p>
-            </div>
-
-            {/* Current values removed to keep the UI client-facing clean */}
-
-            <div className="side-section">
-              <span>Data export & compliance</span>
-              <p>
-                Records are structured for downstream export (CSV/JSON) and include notes for PII handling — configure your storage and retention policies before using in production.
-              </p>
-            </div>
-          </aside>
         </main>
       </div>
-
-      {showResultModal && result && (
-        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="result-modal-title">
-          <div className="modal-card">
-            <div className="modal-head">
-              <div>
-                <span className="modal-kicker">Approval result</span>
-                <h3 id="result-modal-title">Training-ready proposal record</h3>
-              </div>
-              <div className="modal-actions-inline">
-                <button type="button" className="secondary-btn modal-save-btn" onClick={saveResultToDevice}>
-                  Save to device
-                </button>
-                <button type="button" className="modal-close" onClick={closeResultModal} aria-label="Close result window">
-                  ×
-                </button>
-              </div>
-            </div>
-
-            <div className="result-card modal-result-card">
-              <div>
-                <span>Approval Chance</span>
-                <strong>{result.approvalEngine?.approvalChance || engineResult.approvalChance}</strong>
-              </div>
-              <div>
-                <span>Estimated Loan</span>
-                <strong>{result.approvalEngine?.estimatedLoan || engineResult.estimatedLoan}</strong>
-              </div>
-              <div>
-                <span>Risk</span>
-                <strong>{result.approvalEngine?.risk || engineResult.risk}</strong>
-              </div>
-              <div>
-                <span>Property Budget</span>
-                <strong>{currency(result.creditEligibility?.propertyBudget || form.propertyBudget || 0)}</strong>
-              </div>
-            </div>
-
-            <div className="result-basis-box modal-basis-box">
-              <h4>Top 3 bases</h4>
-              <ol>
-                {approvalBases.map((basis) => (
-                  <li key={basis}>{basis}</li>
-                ))}
-              </ol>
-            </div>
-
-            <div className="json-preview modal-json-preview">
-              <h4>Training-ready proposal record</h4>
-              <pre>{JSON.stringify(result, null, 2)}</pre>
-            </div>
-
-          </div>
-        </div>
-      )}
     </div>
   )
 }
