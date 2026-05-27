@@ -1,4 +1,5 @@
 import { jsPDF } from 'jspdf'
+import { AnimatePresence, motion } from 'framer-motion'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
@@ -56,6 +57,12 @@ const faqItems = [
     question: 'Can I edit an answer after typing it?',
     answer: 'Yes. After the intake is complete, you can send a message like “change income to 9000” or “update province to Ontario”.',
   },
+]
+
+const heroHints = [
+  "Let's understand your mortgage readiness.",
+  'Answer a few simple questions.',
+  'Get a tailored approval snapshot in minutes.',
 ]
 
 const initialForm = {
@@ -217,15 +224,6 @@ function validateField(key, value) {
   }
 }
 
-function validateStep(stepIndex, form) {
-  const errors = {}
-  intakeFields.slice(0, stepIndex + 1).forEach((field) => {
-    const error = validateField(field.key, form[field.key])
-    if (error) errors[field.key] = error
-  })
-  return errors
-}
-
 function approvalEngine(form) {
   const income = numberOrZero(form.monthlyIncome)
   const creditStrength = normalizeCreditStrength(form.creditStrength)
@@ -364,7 +362,7 @@ export default function App() {
   const [resultRequested, setResultRequested] = useState(false)
   const [sidebarView, setSidebarView] = useState('overview')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const [selectedAnswers, setSelectedAnswers] = useState({})
+  const [heroHintIndex, setHeroHintIndex] = useState(0)
   const chatScrollRef = useRef(null)
   const typingTimerRef = useRef(null)
 
@@ -373,11 +371,7 @@ export default function App() {
   const approvalResult = useMemo(() => exampleResult || approvalEngine(form), [exampleResult, form])
   const intakeComplete = activeFieldIndex >= intakeFields.length
   const currentField = intakeFields[activeFieldIndex]
-  const currentErrors = useMemo(() => validateStep(activeFieldIndex, form), [activeFieldIndex, form])
   const hasConversationStarted = messages.some((message) => message.role === 'user')
-  const latestAssistantMessage = useMemo(() => {
-    return [...messages].reverse().find((m) => m.role === 'assistant')
-  }, [messages])
   const sidebarHighlights = [
     { x: '10%', y: '18%' },
     { x: '42%', y: '36%' },
@@ -419,23 +413,38 @@ export default function App() {
     }
   }, [messages, isTyping, approvalResult, intakeComplete])
 
-  useEffect(() => {
-    if (hasConversationStarted) setMobileMenuOpen(false)
-  }, [hasConversationStarted])
-
   // If the conversation hasn't started yet, push the first intake question
   useEffect(() => {
     if (!hasConversationStarted && !isTyping && !intakeComplete && messages.length <= 1) {
-      // queue the first question so the chat shows the prompt
-      queueAssistantReply(fieldLabel(currentField), 420)
+      const firstPromptTimer = window.setTimeout(() => {
+        setIsTyping(true)
+        if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current)
+        typingTimerRef.current = window.setTimeout(() => {
+          setIsTyping(false)
+          pushMessage('assistant', fieldLabel(currentField))
+        }, 420)
+      }, 0)
+
+      return () => window.clearTimeout(firstPromptTimer)
     }
+
+    return undefined
   }, [hasConversationStarted, isTyping, intakeComplete, messages.length, currentField])
 
   useEffect(() => () => {
     if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current)
   }, [])
 
-  const pushMessage = (role, text) => {
+  useEffect(() => {
+    if (hasConversationStarted) return undefined
+    const hintTimer = window.setInterval(() => {
+      setHeroHintIndex((current) => (current + 1) % heroHints.length)
+    }, 2600)
+
+    return () => window.clearInterval(hintTimer)
+  }, [hasConversationStarted])
+
+  function pushMessage(role, text) {
     setMessages((current) => [
       ...current,
       {
@@ -446,7 +455,7 @@ export default function App() {
     ])
   }
 
-  const queueAssistantReply = (text, delay = 260, afterReply) => {
+  function queueAssistantReply(text, delay = 260, afterReply) {
     setIsTyping(true)
     if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current)
     typingTimerRef.current = window.setTimeout(() => {
@@ -458,7 +467,6 @@ export default function App() {
 
   const setFieldValue = (key, value) => {
     setForm((current) => ({ ...current, [key]: value }))
-    setSelectedAnswers((current) => ({ ...current, [key]: value }))
     setSavedState('idle')
   }
 
@@ -473,8 +481,6 @@ export default function App() {
   const summarizeResult = () => `Your mortgage result is ready. Approval chance is ${approvalResult.approvalChance}, estimated loan is ${approvalResult.estimatedLoan}, and risk is ${approvalResult.risk}.`
 
   const isResultRequest = (message) => /\b(generate|show|create|build|make|download)\b.*\b(result|report|pdf|script)\b|\bresult\s+script\b|\bshow\s+me\s+the\s+result\b/i.test(message)
-
-  const isFieldUpdateRequest = (message) => /\b(change|update|edit|set)\b|\bmarried\b|\bsingle\b|\bdivorced\b|\bcommon law\b|\bwidowed\b|\bincome\b|\bsavings\b|\bcredit\b|\bage\b|\bprovince\b|\bemployment\b|\bloan\b|\bbudget\b|\bdown payment\b/i.test(message)
 
   const parseFollowUpUpdates = (message) => {
     const updates = []
@@ -614,21 +620,9 @@ export default function App() {
     pushMessage('assistant', intakeComplete ? 'Ask me to generate the result, download the PDF, or change any previous answer.' : 'I can explain your mortgage result, estimate eligibility, or update any captured field.')
   }
 
-  const handleKeyDown = (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault()
-      handleSubmit(event)
-    }
-  }
-
   const handleSubmit = (event) => {
     event.preventDefault()
     handleChatText(draft)
-  }
-
-  const handleOptionClick = (option) => {
-    if (isTyping) return
-    handleFieldAnswer(option)
   }
 
   const handleSuggestionClick = (value) => {
@@ -691,6 +685,31 @@ export default function App() {
     setSavedState('saved')
   }
 
+  const starterSuggestions = hasConversationStarted
+    ? getQuickSuggestions(currentField)
+    : ['Aahil', 'Skip', 'Prefer not to say']
+
+  const rightPanelPrompt = hasConversationStarted
+    ? currentField
+      ? fieldLabel(currentField)
+      : 'Ask for your mortgage readiness result or update an earlier answer.'
+    : 'What is your name?'
+
+  const heroPaneContent = {
+    overview: {
+      title: 'AI mortgage onboarding, designed to feel effortless.',
+      body: 'Start with one short answer and the assistant will guide the rest of the readiness flow in a natural conversation.',
+    },
+    faq: {
+      title: 'Quick answers before you start.',
+      body: faqItems[0]?.answer || 'The assistant keeps everything in one guided conversation.',
+    },
+    'read-doc': {
+      title: 'Document-aware, chat-native workflow.',
+      body: 'Use the live chat to answer, revise, and generate your final mortgage readiness result without leaving this screen.',
+    },
+  }[sidebarView]
+
   return (
     <div className="app-shell">
       <div className="app-backdrop" />
@@ -751,145 +770,277 @@ export default function App() {
             </div>
           </div>
         </aside>
+        <main className="app-stage relative overflow-hidden rounded-[24px] border border-[#2a1f17] bg-[#070707]">
+          <div className="pointer-events-none absolute inset-0">
+            <motion.div
+              className="absolute inset-0 opacity-80"
+              animate={{
+                background: [
+                  'radial-gradient(circle at 25% 12%, rgba(255,90,0,0.20), rgba(7,7,7,0) 35%), radial-gradient(circle at 75% 78%, rgba(255,130,55,0.14), rgba(7,7,7,0) 38%)',
+                  'radial-gradient(circle at 74% 18%, rgba(255,90,0,0.18), rgba(7,7,7,0) 35%), radial-gradient(circle at 26% 82%, rgba(255,130,55,0.16), rgba(7,7,7,0) 38%)',
+                  'radial-gradient(circle at 25% 12%, rgba(255,90,0,0.20), rgba(7,7,7,0) 35%), radial-gradient(circle at 75% 78%, rgba(255,130,55,0.14), rgba(7,7,7,0) 38%)',
+                ],
+              }}
+              transition={{ duration: 12, repeat: Number.POSITIVE_INFINITY, ease: 'easeInOut' }}
+            />
+            <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] bg-[size:46px_46px] opacity-30" />
+          </div>
 
-        <main className="app-stage">
-          <div className="stage-main-content">
-            {/* Hero Section Transition Wrapper */}
-            <div className={`hero-transition-wrap ${hasConversationStarted ? 'collapsed' : 'expanded'}`}>
-              <section className="hero-preview-card hero-stage-card">
-                <div className="hero-preview-top">
-                  <div className="hero-preview-dot" aria-hidden="true" />
-                  <span>Mortgage Assistant</span>
-                  <div className="hero-preview-square" aria-hidden="true" />
-                </div>
-
-                <div className="hero-center-content">
-                  <div className="hero-mini-card">
-                    <div className="hero-icon" aria-hidden="true">
-                      <svg width="32" height="32" viewBox="0 0 34 34" fill="none">
-                        <path d="M17 8L19.5 14L26 14L21 18L23 24.5L17 21L11 24.5L13 18L8 14L14.5 14Z" stroke="#ff5a00" strokeWidth="1.4" strokeLinejoin="round" fill="none" />
-                        <circle cx="17" cy="17" r="3" fill="#ff5a00" opacity="0.85" />
-                        <line x1="17" y1="4" x2="17" y2="7" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
-                        <line x1="17" y1="27" x2="17" y2="30" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
-                        <line x1="4" y1="17" x2="7" y2="17" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
-                        <line x1="27" y1="17" x2="30" y2="17" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
-                      </svg>
-                    </div>
-                    <h1>Mortgage Assistant</h1>
-                    <p>Track mortgage readiness by typing naturally.</p>
-                  </div>
-
-                  <div className="hero-network-actions" role="tablist" aria-label="Hero sections">
-                    {sidebarNav.map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={`hero-network-action ${sidebarView === item.id ? 'active' : ''}`}
-                        onClick={() => setSidebarView(item.id)}
-                      >
-                        {item.label}
-                      </button>
+          <motion.section layout className="relative flex h-full min-h-0 flex-col gap-3 p-3 md:gap-4 md:p-5">
+            <AnimatePresence>
+              {!hasConversationStarted && (
+                <motion.section
+                  key="hero-stage"
+                  layout
+                  initial={{ opacity: 0, y: 26, scale: 0.985 }}
+                  animate={{ opacity: 1, y: 0, scale: heroScale }}
+                  exit={{ opacity: 0, y: -42, scale: 0.94, filter: 'blur(8px)' }}
+                  transition={{ duration: 0.74, ease: [0.22, 1, 0.36, 1] }}
+                  className="relative flex flex-1 items-center justify-center overflow-hidden rounded-[28px] border border-[#433024]/70 bg-[linear-gradient(180deg,rgba(19,19,19,0.92),rgba(11,11,11,0.94))] shadow-[0_22px_80px_rgba(0,0,0,0.45)]"
+                >
+                  <div className="pointer-events-none absolute inset-0 overflow-hidden">
+                    {sidebarHighlights.map((item, index) => (
+                      <motion.span
+                        key={`${item.x}-${item.y}-${index}`}
+                        className="absolute h-2 w-2 rounded-full bg-[#ff8a33]"
+                        style={{ left: item.x, top: item.y, boxShadow: '0 0 20px rgba(255, 106, 32, 0.65)' }}
+                        animate={{ y: [-8, 8, -8], opacity: [0.2, 0.85, 0.2], scale: [0.85, 1.2, 0.85] }}
+                        transition={{ duration: 3.6 + index * 0.35, repeat: Number.POSITIVE_INFINITY, ease: 'easeInOut' }}
+                      />
                     ))}
                   </div>
 
-                  <div className="hero-network">
-                    <div className="hero-network-dots" aria-hidden="true">
-                      {sidebarHighlights.map((item, index) => (
-                        <span key={`${item.x}-${item.y}-${index}`} className="hero-network-node" style={{ left: item.x, top: item.y }} />
-                      ))}
+                  <div className="relative z-10 mx-auto flex w-full max-w-4xl flex-col items-center gap-7 px-4 py-10 text-center md:px-8 md:py-12">
+                    <motion.div layoutId="assistant-orb" className="flex h-20 w-20 items-center justify-center rounded-[26px] border border-[#5a2f12] bg-[#1f1108]/85 shadow-[0_0_0_1px_rgba(255,138,51,0.14),0_0_50px_rgba(255,90,0,0.2)]">
+                      <svg width="38" height="38" viewBox="0 0 34 34" fill="none">
+                        <path d="M17 8L19.5 14L26 14L21 18L23 24.5L17 21L11 24.5L13 18L8 14L14.5 14Z" stroke="#ff6a20" strokeWidth="1.4" strokeLinejoin="round" fill="none" />
+                        <circle cx="17" cy="17" r="3" fill="#ff6a20" opacity="0.92" />
+                        <line x1="17" y1="4" x2="17" y2="7" stroke="#ff8a33" strokeWidth="1.5" strokeLinecap="round" />
+                        <line x1="17" y1="27" x2="17" y2="30" stroke="#ff8a33" strokeWidth="1.5" strokeLinecap="round" />
+                        <line x1="4" y1="17" x2="7" y2="17" stroke="#ff8a33" strokeWidth="1.5" strokeLinecap="round" />
+                        <line x1="27" y1="17" x2="30" y2="17" stroke="#ff8a33" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    </motion.div>
+
+                    <div className="space-y-2">
+                      <p className="text-sm font-semibold tracking-[0.18em] text-[#ffd3b3]/90">Mortgage Assistant</p>
+                      <h1 className="text-balance text-4xl font-black text-white md:text-5xl">Mortgage Assistant</h1>
+                      <p className="mx-auto max-w-2xl text-pretty text-base text-[#b5b5b5] md:text-xl">Track mortgage readiness by typing naturally.</p>
+                    </div>
+
+                    <div className="relative w-full max-w-3xl rounded-[18px] border border-[#4a2a17]/80 bg-[#0f0f0f]/55 p-1.5 backdrop-blur-xl">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        {sidebarNav.map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => setSidebarView(item.id)}
+                            className={`relative overflow-hidden rounded-[12px] px-4 py-3 text-xs font-bold tracking-[0.15em] transition-all duration-300 ${
+                              sidebarView === item.id ? 'text-[#fff3e9]' : 'text-[#ffc5a0] hover:text-white'
+                            }`}
+                          >
+                            {sidebarView === item.id && (
+                              <motion.span
+                                layoutId="hero-active-tab"
+                                className="absolute inset-0 rounded-[12px] border border-[#8a4b20] bg-[linear-gradient(120deg,rgba(255,90,0,0.30),rgba(255,90,0,0.06))]"
+                                transition={{ type: 'spring', stiffness: 280, damping: 28 }}
+                              />
+                            )}
+                            <span className="relative">{item.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-sm font-semibold uppercase tracking-[0.12em] text-[#ffad74]">AI Readiness Assistant</p>
+                      <AnimatePresence mode="wait">
+                        <motion.p
+                          key={heroHintIndex}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -10 }}
+                          transition={{ duration: 0.35, ease: 'easeOut' }}
+                          className="text-base text-[#f2f2f2]"
+                        >
+                          {heroHints[heroHintIndex]}
+                        </motion.p>
+                      </AnimatePresence>
+                      <p className="mx-auto max-w-2xl text-sm text-[#a6a6a6]">{heroPaneContent.title} {heroPaneContent.body}</p>
                     </div>
                   </div>
+                </motion.section>
+              )}
+            </AnimatePresence>
+
+            <motion.section
+              layout
+              transition={{ duration: 0.72, ease: [0.22, 1, 0.36, 1] }}
+              className={`relative flex min-h-0 flex-col overflow-hidden rounded-[22px] border border-[#3a2a1f]/80 bg-[linear-gradient(180deg,rgba(12,12,12,0.92),rgba(9,9,9,0.95))] backdrop-blur-xl ${
+                hasConversationStarted ? 'flex-1 shadow-[0_24px_80px_rgba(0,0,0,0.5)]' : 'shrink-0'
+              }`}
+            >
+              {hasConversationStarted && (
+                <div className="flex items-center justify-between border-b border-[#2d2118] px-4 py-3 md:px-5">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-[#ffe1cc]">
+                    <motion.div layoutId="assistant-orb" className="h-2.5 w-2.5 rounded-full bg-[#ff7a2d] shadow-[0_0_16px_rgba(255,122,45,0.75)]" />
+                    Live conversation
+                  </div>
+                  <div className="text-xs tracking-[0.12em] text-[#8f8f8f]">Mortgage readiness</div>
                 </div>
-              </section>
-            </div>
+              )}
 
-            {/* Chat Section Transition Wrapper */}
-            <div className={`chat-transition-wrap ${hasConversationStarted ? 'expanded' : 'collapsed'}`}>
-              <div className="chat-stream" ref={chatScrollRef}>
-                {messages.map((message) => (
-                  <article key={message.id} className={`chat-bubble ${message.role}`}>
-                    <p>{message.text}</p>
-                  </article>
-                ))}
+              <AnimatePresence initial={false}>
+                {hasConversationStarted ? (
+                  <motion.div
+                    key="chat-stream"
+                    layout
+                    initial={{ opacity: 0, y: 14 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.42 }}
+                    className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-4 md:px-5"
+                    ref={chatScrollRef}
+                  >
+                    <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
+                      {messages.map((message, index) => (
+                        <motion.article
+                          key={message.id}
+                          initial={{ opacity: 0, y: 12, scale: 0.985 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          transition={{ duration: 0.28, delay: Math.min(index * 0.02, 0.18), ease: 'easeOut' }}
+                          className={`max-w-[88%] rounded-2xl border px-4 py-3 text-[15px] leading-relaxed ${
+                            message.role === 'assistant'
+                              ? 'self-start border-[#3a2a1e] bg-[#16110e] text-[#f5e6da]'
+                              : 'self-end border-[#6a3a1a] bg-[linear-gradient(135deg,#ff5a00,#c44a08)] text-white shadow-[0_8px_30px_rgba(255,90,0,0.2)]'
+                          }`}
+                        >
+                          <p>{message.text}</p>
+                        </motion.article>
+                      ))}
 
-                {isTyping && (
-                  <article className="chat-bubble assistant typing">
-                    <div className="typing-dots" aria-label="Assistant is typing">
-                      <span />
-                      <span />
-                      <span />
+                      <AnimatePresence>
+                        {isTyping && (
+                          <motion.article
+                            key="typing-indicator"
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -6 }}
+                            className="self-start rounded-2xl border border-[#3a2a1e] bg-[#14100d] px-4 py-3"
+                            aria-label="Assistant is typing"
+                          >
+                            <div className="flex items-center gap-1.5">
+                              {[0, 1, 2].map((dot) => (
+                                <motion.span
+                                  key={dot}
+                                  className="h-2 w-2 rounded-full bg-[#ff8a33]"
+                                  animate={{ y: [0, -5, 0], opacity: [0.45, 1, 0.45] }}
+                                  transition={{ duration: 0.9, repeat: Number.POSITIVE_INFINITY, delay: dot * 0.12 }}
+                                />
+                              ))}
+                            </div>
+                          </motion.article>
+                        )}
+                      </AnimatePresence>
+
+                      {intakeComplete && resultRequested && (
+                        <motion.section
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="rounded-2xl border border-[#5b3319] bg-[linear-gradient(180deg,rgba(29,18,12,0.92),rgba(18,13,10,0.96))] p-4"
+                        >
+                          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#ffb37f]">Result</p>
+                          <h3 className="mt-1 text-xl font-semibold text-white">{buildResultTitle(approvalResult)}</h3>
+                          <div className="mt-4 grid gap-3 md:grid-cols-3">
+                            <div className="rounded-xl border border-[#4a2f1d] bg-black/25 p-3">
+                              <p className="text-xs text-[#b2a091]">Approval chance</p>
+                              <strong className="text-lg text-white">{approvalResult.approvalChance}</strong>
+                            </div>
+                            <div className="rounded-xl border border-[#4a2f1d] bg-black/25 p-3">
+                              <p className="text-xs text-[#b2a091]">Estimated loan</p>
+                              <strong className="text-lg text-white">{approvalResult.estimatedLoan}</strong>
+                            </div>
+                            <div className="rounded-xl border border-[#4a2f1d] bg-black/25 p-3">
+                              <p className="text-xs text-[#b2a091]">Risk</p>
+                              <strong className="text-lg text-white">{approvalResult.risk}</strong>
+                            </div>
+                          </div>
+                          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-[#c2b2a2]">
+                            <p>Any follow-up edit updates this result instantly.</p>
+                            <button
+                              type="button"
+                              onClick={() => saveResultToDevice()}
+                              className="rounded-full border border-[#8a4a20] bg-[#21140c] px-4 py-2 font-semibold text-[#ffd7bb] transition hover:brightness-110"
+                            >
+                              Generate PDF
+                            </button>
+                          </div>
+                        </motion.section>
+                      )}
                     </div>
-                  </article>
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="starter-cue"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="px-4 pb-2 pt-4 text-sm text-[#c3b8af] md:px-6"
+                  >
+                    <p className="font-semibold text-[#ffe1cc]">{rightPanelPrompt}</p>
+                    <p className="mt-1 text-xs text-[#9f9f9f]">{getResponseHint(currentField)}</p>
+                  </motion.div>
                 )}
+              </AnimatePresence>
 
-                {intakeComplete && resultRequested && (
-                  <section className="result-panel">
-                    <div className="result-head">
-                      <span className="eyebrow">Result</span>
-                      <h3>{buildResultTitle(approvalResult)}</h3>
-                    </div>
-                    <div className="result-grid">
-                      <div>
-                        <span>Approval chance</span>
-                        <strong>{approvalResult.approvalChance}</strong>
-                      </div>
-                      <div>
-                        <span>Estimated loan</span>
-                        <strong>{approvalResult.estimatedLoan}</strong>
-                      </div>
-                      <div>
-                        <span>Risk</span>
-                        <strong>{approvalResult.risk}</strong>
-                      </div>
-                    </div>
-                    <div className="result-meta">
-                      <p>Any follow-up edit updates this result instantly. Ask to regenerate the PDF when you are ready.</p>
-                      <button type="button" className="result-action" onClick={() => saveResultToDevice()}>
-                        Generate PDF
-                      </button>
-                    </div>
-                  </section>
-                )}
-              </div>
-            </div>
-          </div>
+              <div className="sticky bottom-0 z-20 space-y-3 border-t border-[#2f231a] bg-[linear-gradient(180deg,rgba(13,13,13,0.75),rgba(10,10,10,0.94))] p-3 backdrop-blur-xl md:p-4">
+                <div className="flex flex-wrap gap-2">
+                  {starterSuggestions.map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => handleSuggestionClick(item)}
+                      className="rounded-full border border-[#4e3729] bg-[#1a1a1a]/80 px-3.5 py-1.5 text-sm text-[#dfdfdf] transition hover:border-[#965024] hover:text-white"
+                    >
+                      {item}
+                    </button>
+                  ))}
+                </div>
 
-          {/* Bottom Area Pinned */}
-          <div className="bottom-area">
-            {hasConversationStarted && getQuickSuggestions(currentField).length > 0 && (
-              <div className="suggestions">
-                {getQuickSuggestions(currentField).map((item) => (
-                  <button key={item} type="button" className="chip" onClick={() => handleSuggestionClick(item)}>
-                    {item}
+                <form onSubmit={handleSubmit} className="group flex items-center gap-2 rounded-[20px] border border-[#4d3526] bg-[#121212]/90 p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.45)]">
+                  <input
+                    type="text"
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    placeholder={
+                      hasConversationStarted
+                        ? currentField
+                          ? currentField.placeholder || currentField.label
+                          : 'Type a follow-up question...'
+                        : 'Type your name'
+                    }
+                    className="h-12 flex-1 rounded-2xl border border-transparent bg-transparent px-3 text-[15px] text-white outline-none placeholder:text-[#707070] focus:border-[#7e431f]"
+                  />
+                  <button
+                    type="submit"
+                    aria-label="Send message"
+                    className="flex h-11 w-11 items-center justify-center rounded-full bg-[linear-gradient(135deg,#ff6b1e,#ff8f47)] text-white shadow-[0_0_24px_rgba(255,110,30,0.45)] transition duration-200 group-focus-within:scale-105"
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="22" y1="2" x2="11" y2="13" />
+                      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                    </svg>
                   </button>
-                ))}
+                </form>
+
+                {savedState === 'saved' && (
+                  <div className="inline-flex rounded-full border border-[#3f7138] bg-[#122013] px-3 py-1 text-xs font-semibold text-[#b7efb5]">
+                    Saved to device
+                  </div>
+                )}
               </div>
-            )}
-
-            {!hasConversationStarted && latestAssistantMessage && (
-              <div key={latestAssistantMessage.id} className="ai-prompt-line">
-                {latestAssistantMessage.text}
-              </div>
-            )}
-
-            <form className="input-bar" onSubmit={handleSubmit}>
-              <textarea
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={currentField ? currentField.placeholder || currentField.label : 'Type a follow-up question...'}
-                rows={1}
-              />
-              <button type="submit" className="send-btn" aria-label="Send message">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="22" y1="2" x2="11" y2="13" />
-                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                </svg>
-              </button>
-            </form>
-
-            {savedState === 'saved' && <div className="status-pill success">Saved to device</div>}
-          </div>
+            </motion.section>
+          </motion.section>
         </main>
       </div>
     </div>
