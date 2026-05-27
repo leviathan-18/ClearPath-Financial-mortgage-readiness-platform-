@@ -1,5 +1,5 @@
-import { jsPDF } from 'jspdf'
 import { AnimatePresence, motion } from 'framer-motion'
+import { jsPDF } from 'jspdf'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
@@ -96,6 +96,16 @@ function numberOrZero(value) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+function parseNonNegativeNumber(value) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return null
+  // Accept values like "63000", "63,000", "$63,000", "63000.50"
+  if (!/^\$?[0-9][0-9,]*(\.[0-9]+)?$/.test(raw)) return null
+  const normalized = Number(raw.replace(/[$,]/g, ''))
+  if (!Number.isFinite(normalized) || normalized < 0) return null
+  return normalized
+}
+
 function normalizeCreditStrength(value) {
   const score = numberOrZero(value)
   if (score <= 0) return 0
@@ -180,16 +190,6 @@ function lookupExampleResult(form, examples) {
     ].every((key) => sameFieldValue(form[key], exampleForm[key]))
 
     if (exactMatch) return parseTrainingCompletion(example.completion || '')
-
-    const distance = exampleDistance(form, exampleForm)
-    if (distance < bestDistance) {
-      bestDistance = distance
-      bestExample = example
-    }
-  }
-
-  if (bestExample && bestDistance <= 35) {
-    return parseTrainingCompletion(bestExample.completion || '')
   }
 
   return null
@@ -197,6 +197,7 @@ function lookupExampleResult(form, examples) {
 
 function validateField(key, value) {
   const numericValue = numberOrZero(value)
+  const strictNumeric = parseNonNegativeNumber(value)
 
   switch (key) {
     case 'name':
@@ -216,7 +217,7 @@ function validateField(key, value) {
     case 'desiredLoanAmount':
     case 'propertyBudget':
     case 'downPayment':
-      return numericValue >= 0 ? '' : 'Enter a valid number.'
+      return strictNumeric !== null ? '' : 'Enter a valid number.'
     case 'creditStrength':
       return isValidCreditStrength(value) ? '' : 'Credit strength must be between 300 and 900.'
     default:
@@ -232,32 +233,52 @@ function approvalEngine(form) {
   const savings = numberOrZero(form.savings)
   const desiredLoan = numberOrZero(form.desiredLoanAmount)
   const propertyBudget = numberOrZero(form.propertyBudget)
+  const downPayment = numberOrZero(form.downPayment)
   const years = numberOrZero(form.yearsOfExperience)
+  const effectiveIncome = Math.max(1, income)
+  const debtRatio = debt / effectiveIncome
+  const expenseRatio = expenses / effectiveIncome
+  const ltv = propertyBudget > 0 ? desiredLoan / propertyBudget : 1
+  const liquidityCover = desiredLoan > 0 ? (savings + downPayment) / desiredLoan : 0
 
-  let approvalChance = creditStrength
+  // Convert credit score range (300-900) into a practical approval baseline (12-72)
+  let approvalChance = 12 + ((Math.max(300, Math.min(900, creditStrength)) - 300) / 600) * 60
 
-  if (income > 10000) approvalChance += 8
-  else if (income > 8000) approvalChance += 6
-  else if (income > 6000) approvalChance += 5
-  else if (income > 4500) approvalChance += 3
-  else if (income > 3000) approvalChance += 1
+  if (income > 12000) approvalChance += 10
+  else if (income > 9000) approvalChance += 8
+  else if (income > 7000) approvalChance += 6
+  else if (income > 5000) approvalChance += 4
+  else if (income > 3500) approvalChance += 2
 
-  if (debt > 7000) approvalChance -= 8
-  else if (debt > 3500) approvalChance -= 5
-  else if (debt > 2000) approvalChance -= 3
-  else if (debt > 0) approvalChance -= 1
+  // Penalize debt by ratio so all updates impact result consistently
+  if (debtRatio > 2.5) approvalChance -= 15
+  else if (debtRatio > 1.5) approvalChance -= 10
+  else if (debtRatio > 0.8) approvalChance -= 6
+  else if (debtRatio > 0.35) approvalChance -= 3
 
-  if (expenses > income * 0.75) approvalChance -= 10
-  else if (expenses > income * 0.6) approvalChance -= 6
-  else if (expenses > income * 0.5) approvalChance -= 3
+  if (expenseRatio > 2.2) approvalChance -= 12
+  else if (expenseRatio > 1.5) approvalChance -= 8
+  else if (expenseRatio > 1.0) approvalChance -= 5
+  else if (expenseRatio > 0.7) approvalChance -= 2
+
+  // Reward stronger buffers and lower loan-to-value positions
+  if (liquidityCover >= 1.0) approvalChance += 10
+  else if (liquidityCover >= 0.6) approvalChance += 7
+  else if (liquidityCover >= 0.3) approvalChance += 4
+
+  if (ltv <= 0.65) approvalChance += 8
+  else if (ltv <= 0.8) approvalChance += 5
+  else if (ltv <= 0.9) approvalChance += 2
+  else if (ltv > 1.0) approvalChance -= 5
 
   if (form.employmentType === 'Unemployed') approvalChance -= 20
-  else if (form.employmentType === 'Salaried') approvalChance += 2
+  else if (form.employmentType === 'Salaried') approvalChance += 3
   else if (form.employmentType === 'Business owner') approvalChance += 2
   else if (form.employmentType === 'Self-employed') approvalChance += 1
 
-  if (years >= 15) approvalChance += 4
-  else if (years >= 5) approvalChance += 2
+  if (years >= 15) approvalChance += 5
+  else if (years >= 8) approvalChance += 3
+  else if (years >= 3) approvalChance += 1
   else if (years < 1) approvalChance -= 10
 
   approvalChance = Math.max(5, Math.min(95, Math.round(approvalChance)))
@@ -279,6 +300,60 @@ function buildResultTitle(result) {
   if (result.risk === 'Low') return 'Strong approval position'
   if (result.risk === 'Medium') return 'Moderate approval position'
   return 'Higher review risk'
+}
+
+function formatReviewValue(value) {
+  if (value === null || value === undefined || value === '') return '—'
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  return String(value).trim() || '—'
+}
+
+function buildResultSections(form, approvalResult, exampleResult) {
+  const filledCount = Object.values(form).filter((value) => String(value ?? '').trim()).length
+
+  return [
+    {
+      title: 'Result Summary',
+      items: [
+        { label: 'Status', value: buildResultTitle(approvalResult) },
+        { label: 'Approval Chance', value: approvalResult.approvalChance },
+        { label: 'Estimated Loan', value: approvalResult.estimatedLoan },
+        { label: 'Risk', value: approvalResult.risk },
+        { label: 'Example Matched', value: Boolean(exampleResult) },
+        { label: 'Captured Fields', value: `${filledCount}/${intakeFields.length}` },
+      ],
+    },
+    {
+      title: 'Applicant Details',
+      items: [
+        { label: 'Full Name', value: form.name },
+        { label: 'Age', value: form.age },
+        { label: 'Marital Status', value: form.maritalStatus },
+        { label: 'Dependents', value: form.dependents },
+        { label: 'Province', value: form.province },
+      ],
+    },
+    {
+      title: 'Financial Information',
+      items: [
+        { label: 'Employment Type', value: form.employmentType },
+        { label: 'Monthly Income', value: form.monthlyIncome },
+        { label: 'Savings', value: form.savings },
+        { label: 'Existing Loans', value: form.existingLoans },
+        { label: 'Monthly Expenses', value: form.monthlyExpenses },
+        { label: 'Years of Experience', value: form.yearsOfExperience },
+      ],
+    },
+    {
+      title: 'Credit Eligibility',
+      items: [
+        { label: 'Credit Strength', value: form.creditStrength },
+        { label: 'Desired Loan Amount', value: form.desiredLoanAmount },
+        { label: 'Property Budget', value: form.propertyBudget },
+        { label: 'Down Payment', value: form.downPayment },
+      ],
+    },
+  ]
 }
 
 function fieldLabel(field) {
@@ -309,11 +384,14 @@ function getQuickSuggestions(field) {
 }
 
 function parseEditableFieldUpdate(message) {
-  const match = message.match(/(?:change|update|edit|set)\s+(.+?)\s+to\s+(.+)/i)
+  // support both "change X to Y" and "change X Y"
+  const match = message.match(/(?:change|update|edit|set)\s+(.+?)\s+(?:to\s+)?(.+)/i)
   if (!match) return null
 
-  const target = match[1].trim().toLowerCase()
-  const rawValue = match[2].trim()
+  const targetRaw = match[1].trim().toLowerCase()
+  let rawValue = match[2].trim()
+  // clean numeric values like $6,300 -> 6300
+  rawValue = rawValue.replace(/[$,]/g, '').trim()
 
   const map = {
     name: 'name',
@@ -342,7 +420,17 @@ function parseEditableFieldUpdate(message) {
     dependents: 'dependents',
   }
 
-  return map[target] ? { key: map[target], value: rawValue } : null
+  const normalize = (s) => s.replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim()
+  const target = normalize(targetRaw)
+
+  if (map[target]) return { key: map[target], value: rawValue }
+
+  // fallback: try to match by including keywords
+  for (const k of Object.keys(map)) {
+    if (target.includes(k)) return { key: map[k], value: rawValue }
+  }
+
+  return null
 }
 
 export default function App() {
@@ -595,11 +683,30 @@ export default function App() {
 
     const updates = parseFollowUpUpdates(nextInput)
     if (updates.length > 0) {
-      updates.forEach((update) => setFieldValue(update.key, update.value))
+      // Apply updates in a single state update so we can compute the new result immediately
+      const newForm = { ...form }
+      const newSelected = { ...selectedAnswers }
+      updates.forEach((update) => {
+        newForm[update.key] = update.value
+        newSelected[update.key] = update.value
+      })
+      setForm(newForm)
+      setSelectedAnswers(newSelected)
+      setSavedState('idle')
+
       const summary = updates
         .map((update) => `${update.key.replace(/([A-Z])/g, ' $1').toLowerCase()} is now ${update.value}`)
         .join(', ')
-      pushMessage('assistant', resultRequested ? `Updated ${summary}. ${summarizeResult()}` : `Updated ${summary}. Ask me to generate the result when you are ready.`)
+
+      // Compute the fresh approval result from the updated form so the assistant message and UI reflect changes immediately
+      const matchedExample = lookupExampleResult(newForm, trainingExamples)
+      const freshApproval = matchedExample || approvalEngine(newForm)
+      const resultMsg = resultRequested
+        ? `Updated ${summary}. Approval chance is ${freshApproval.approvalChance}, estimated loan is ${freshApproval.estimatedLoan}, and risk is ${freshApproval.risk}.`
+        : `Updated ${summary}. Ask me to generate the result when you are ready.`
+
+      pushMessage('assistant', resultMsg)
+      if (!resultRequested) setResultRequested(true)
       return
     }
 
@@ -631,56 +738,97 @@ export default function App() {
   }
 
   const saveResultToDevice = () => {
-    const record = {
-      approvalEngine: approvalResult,
-      personalInfo: {
-        name: form.name,
-        age: form.age,
-        maritalStatus: form.maritalStatus,
-        dependents: form.dependents,
-        province: form.province,
-      },
-      incomeStructure: {
-        employmentType: form.employmentType,
-        monthlyIncome: form.monthlyIncome,
-        savings: form.savings,
-        existingLoans: form.existingLoans,
-        monthlyExpenses: form.monthlyExpenses,
-        yearsOfExperience: form.yearsOfExperience,
-      },
-      creditEligibility: {
-        creditStrength: form.creditStrength,
-        desiredLoanAmount: form.desiredLoanAmount,
-        propertyBudget: form.propertyBudget,
-        downPayment: form.downPayment,
-      },
-      savedAt: new Date().toISOString(),
-      exampleMatched: Boolean(exampleResult),
-    }
-
     const fileName = `${(form.name || 'mortgage-readiness').toString().trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'mortgage-readiness'}-result.pdf`
     const pdf = new jsPDF({ unit: 'mm', format: 'a4' })
     const marginX = 14
-    let cursorY = 18
     const pageWidth = pdf.internal.pageSize.getWidth()
+    const pageHeight = pdf.internal.pageSize.getHeight()
     const contentWidth = pageWidth - marginX * 2
+    const rightX = pageWidth - marginX
+    let cursorY = 16
 
-    pdf.setFont('helvetica', 'bold')
-    pdf.setFontSize(18)
-    pdf.text('Mortgage readiness result', marginX, cursorY)
-    cursorY += 10
+    const resultSections = buildResultSections(form, approvalResult, exampleResult)
+    const formatText = (value) => formatReviewValue(value)
 
-    pdf.setFont('helvetica', 'normal')
-    pdf.setFontSize(11)
-    pdf.text(`Approval chance: ${approvalResult.approvalChance}`, marginX, cursorY)
-    cursorY += 6
-    pdf.text(`Estimated loan: ${approvalResult.estimatedLoan}`, marginX, cursorY)
-    cursorY += 6
-    pdf.text(`Risk: ${approvalResult.risk}`, marginX, cursorY)
-    cursorY += 10
+    const addPageHeader = () => {
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(18)
+      pdf.setTextColor(17, 24, 39)
+      pdf.text('Mortgage Readiness Result', marginX, cursorY)
+      cursorY += 8
 
-    const lines = pdf.splitTextToSize(JSON.stringify(record, null, 2), contentWidth)
-    pdf.text(lines, marginX, cursorY)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(10)
+      pdf.setTextColor(107, 114, 128)
+      pdf.text(`Generated: ${new Date().toLocaleString()}`, marginX, cursorY)
+      cursorY += 8
+
+      pdf.setDrawColor(255, 122, 45)
+      pdf.setFillColor(255, 122, 45)
+      pdf.roundedRect(marginX, cursorY, contentWidth, 20, 3, 3, 'S')
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(11)
+      pdf.setTextColor(17, 24, 39)
+      pdf.text(`Approval Chance`, marginX + 5, cursorY + 7)
+      pdf.text(`Estimated Loan`, marginX + contentWidth / 3 + 5, cursorY + 7)
+      pdf.text(`Risk`, marginX + (contentWidth / 3) * 2 + 5, cursorY + 7)
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(12)
+      pdf.text(formatText(approvalResult.approvalChance), marginX + 5, cursorY + 15)
+      pdf.text(formatText(approvalResult.estimatedLoan), marginX + contentWidth / 3 + 5, cursorY + 15)
+      pdf.text(formatText(approvalResult.risk), marginX + (contentWidth / 3) * 2 + 5, cursorY + 15)
+      cursorY += 28
+    }
+
+    const ensureSpace = (neededHeight) => {
+      if (cursorY + neededHeight <= pageHeight - 18) return
+      pdf.addPage()
+      cursorY = 16
+      addPageHeader()
+    }
+
+    const addSectionTitle = (title) => {
+      ensureSpace(14)
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(13)
+      pdf.setTextColor(31, 41, 55)
+      pdf.text(title, marginX, cursorY)
+      cursorY += 5
+      pdf.setDrawColor(229, 231, 235)
+      pdf.line(marginX, cursorY, rightX, cursorY)
+      cursorY += 5
+    }
+
+    const addRow = (label, value) => {
+      const cleanValue = formatText(value)
+      const labelText = `${label}:`
+      const labelWidth = 56
+      const wrapped = pdf.splitTextToSize(cleanValue, contentWidth - labelWidth - 4)
+      const rowHeight = Math.max(7, wrapped.length * 5 + 1)
+      ensureSpace(rowHeight + 2)
+
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(10.5)
+      pdf.setTextColor(75, 85, 99)
+      pdf.text(labelText, marginX, cursorY)
+
+      pdf.setFont('helvetica', 'normal')
+      pdf.setTextColor(17, 24, 39)
+      pdf.text(wrapped, marginX + labelWidth, cursorY)
+      cursorY += rowHeight
+    }
+
+    addPageHeader()
+
+    resultSections.forEach((section) => {
+      addSectionTitle(section.title)
+      section.items.forEach((item) => addRow(item.label, item.value))
+    })
+
+    addSectionTitle('AI Recommendation')
+    addRow('Result', approvalResult.risk === 'Low' ? 'Strong mortgage readiness profile' : 'Further review recommended')
+    addRow('Saved At', new Date().toISOString())
+
     pdf.save(fileName)
     setSavedState('saved')
   }
@@ -694,6 +842,31 @@ export default function App() {
       ? fieldLabel(currentField)
       : 'Ask for your mortgage readiness result or update an earlier answer.'
     : 'What is your name?'
+
+  const resultSections = buildResultSections(form, approvalResult, exampleResult)
+
+  const chatCardIdleStyle = hasConversationStarted
+    ? undefined
+    : {
+        marginTop: 'clamp(12px, 1.5vw, 20px)',
+      }
+
+  const stageIdlePaddingStyle = hasConversationStarted
+    ? undefined
+    : {
+        paddingTop: 0,
+      }
+
+  const stageCardStyle = hasConversationStarted
+    ? undefined
+    : {
+        ...stageIdlePaddingStyle,
+        ...chatCardIdleStyle,
+      }
+
+  const stagePaneClassName = hasConversationStarted
+    ? 'relative flex h-full min-h-0 flex-col gap-3 p-3 md:gap-4 md:p-5'
+    : 'relative grid h-full min-h-0 grid-rows-[13fr_7fr] gap-3 p-3 md:gap-4 md:p-5'
 
   const heroPaneContent = {
     overview: {
@@ -786,7 +959,7 @@ export default function App() {
             <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] bg-[size:46px_46px] opacity-30" />
           </div>
 
-          <motion.section layout className="relative flex h-full min-h-0 flex-col gap-3 p-3 md:gap-4 md:p-5">
+          <motion.section layout className={stagePaneClassName}>
             <AnimatePresence>
               {!hasConversationStarted && (
                 <motion.section
@@ -810,9 +983,9 @@ export default function App() {
                     ))}
                   </div>
 
-                  <div className="relative z-10 mx-auto flex w-full max-w-4xl flex-col items-center gap-7 px-4 py-10 text-center md:px-8 md:py-12">
-                    <motion.div layoutId="assistant-orb" className="flex h-20 w-20 items-center justify-center rounded-[26px] border border-[#5a2f12] bg-[#1f1108]/85 shadow-[0_0_0_1px_rgba(255,138,51,0.14),0_0_50px_rgba(255,90,0,0.2)]">
-                      <svg width="38" height="38" viewBox="0 0 34 34" fill="none">
+                  <div className="relative z-10 mx-auto mt-[130px] flex h-full w-full max-w-4xl origin-top scale-[0.85] flex-col items-center justify-center gap-6 px-4 py-8 text-center md:px-8 md:py-10">
+                    <motion.div layoutId="assistant-orb" className="flex h-20 w-20 items-center justify-center rounded-[30px] border border-[#5a2f12] bg-[#1f1108]/85 shadow-[0_0_0_1px_rgba(255,138,51,0.14),0_0_50px_rgba(255,90,0,0.2)] md:h-24 md:w-24">
+                      <svg width="40" height="40" viewBox="0 0 34 34" fill="none">
                         <path d="M17 8L19.5 14L26 14L21 18L23 24.5L17 21L11 24.5L13 18L8 14L14.5 14Z" stroke="#ff6a20" strokeWidth="1.4" strokeLinejoin="round" fill="none" />
                         <circle cx="17" cy="17" r="3" fill="#ff6a20" opacity="0.92" />
                         <line x1="17" y1="4" x2="17" y2="7" stroke="#ff8a33" strokeWidth="1.5" strokeLinecap="round" />
@@ -822,10 +995,10 @@ export default function App() {
                       </svg>
                     </motion.div>
 
-                    <div className="space-y-2">
-                      <p className="text-sm font-semibold tracking-[0.18em] text-[#ffd3b3]/90">Mortgage Assistant</p>
-                      <h1 className="text-balance text-4xl font-black text-white md:text-5xl">Mortgage Assistant</h1>
-                      <p className="mx-auto max-w-2xl text-pretty text-base text-[#b5b5b5] md:text-xl">Track mortgage readiness by typing naturally.</p>
+                    <div className="space-y-3">
+                      <p className="text-[12px] font-semibold tracking-[0.18em] text-[#ffd3b3]/90 md:text-[14px]">Mortgage Assistant</p>
+                      <h1 className="text-balance text-[34px] font-black leading-none text-white md:text-[46px]">Mortgage Assistant</h1>
+                      <p className="mx-auto max-w-2xl text-pretty text-[16px] text-[#b5b5b5] md:text-[20px]">Track mortgage readiness by typing naturally.</p>
                     </div>
 
                     <div className="relative w-full max-w-3xl rounded-[18px] border border-[#4a2a17]/80 bg-[#0f0f0f]/55 p-1.5 backdrop-blur-xl">
@@ -852,8 +1025,8 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <p className="text-sm font-semibold uppercase tracking-[0.12em] text-[#ffad74]">AI Readiness Assistant</p>
+                    <div className="space-y-3">
+                      <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#ffad74] md:text-[14px]">AI Readiness Assistant</p>
                       <AnimatePresence mode="wait">
                         <motion.p
                           key={heroHintIndex}
@@ -861,12 +1034,12 @@ export default function App() {
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, y: -10 }}
                           transition={{ duration: 0.35, ease: 'easeOut' }}
-                          className="text-base text-[#f2f2f2]"
+                          className="text-[14px] text-[#f2f2f2] md:text-[16px]"
                         >
                           {heroHints[heroHintIndex]}
                         </motion.p>
                       </AnimatePresence>
-                      <p className="mx-auto max-w-2xl text-sm text-[#a6a6a6]">{heroPaneContent.title} {heroPaneContent.body}</p>
+                      <p className="mx-auto max-w-2xl text-[12px] text-[#a6a6a6] md:text-[14px]">{heroPaneContent.title} {heroPaneContent.body}</p>
                     </div>
                   </div>
                 </motion.section>
@@ -876,6 +1049,7 @@ export default function App() {
             <motion.section
               layout
               transition={{ duration: 0.72, ease: [0.22, 1, 0.36, 1] }}
+              style={stageCardStyle}
               className={`relative flex min-h-0 flex-col overflow-hidden rounded-[22px] border border-[#3a2a1f]/80 bg-[linear-gradient(180deg,rgba(12,12,12,0.92),rgba(9,9,9,0.95))] backdrop-blur-xl ${
                 hasConversationStarted ? 'flex-1 shadow-[0_24px_80px_rgba(0,0,0,0.5)]' : 'shrink-0'
               }`}
@@ -949,8 +1123,20 @@ export default function App() {
                           animate={{ opacity: 1, y: 0 }}
                           className="rounded-2xl border border-[#5b3319] bg-[linear-gradient(180deg,rgba(29,18,12,0.92),rgba(18,13,10,0.96))] p-4"
                         >
-                          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#ffb37f]">Result</p>
-                          <h3 className="mt-1 text-xl font-semibold text-white">{buildResultTitle(approvalResult)}</h3>
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#ffb37f]">Result</p>
+                              <h3 className="mt-1 text-xl font-semibold text-white">{buildResultTitle(approvalResult)}</h3>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => saveResultToDevice()}
+                              className="rounded-full border border-[#8a4a20] bg-[#21140c] px-4 py-2 text-sm font-semibold text-[#ffd7bb] transition hover:brightness-110"
+                            >
+                              Generate PDF
+                            </button>
+                          </div>
+
                           <div className="mt-4 grid gap-3 md:grid-cols-3">
                             <div className="rounded-xl border border-[#4a2f1d] bg-black/25 p-3">
                               <p className="text-xs text-[#b2a091]">Approval chance</p>
@@ -965,15 +1151,32 @@ export default function App() {
                               <strong className="text-lg text-white">{approvalResult.risk}</strong>
                             </div>
                           </div>
-                          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-[#c2b2a2]">
+
+                          <div className="mt-4 rounded-2xl border border-[#3f291b] bg-[#120c09]/90 p-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#ffb37f]">Filled data preview</p>
+                              <p className="text-xs text-[#a9917f]">Scroll to review everything before download</p>
+                            </div>
+
+                            <div className="result-review-scroll mt-3 max-h-[280px] space-y-4 overflow-y-auto pr-2">
+                              {resultSections.map((section) => (
+                                <div key={section.title} className="space-y-2">
+                                  <h4 className="text-sm font-semibold text-[#fff0e6]">{section.title}</h4>
+                                  <div className="grid gap-2">
+                                    {section.items.map((item) => (
+                                      <div key={`${section.title}-${item.label}`} className="rounded-xl border border-[#352218] bg-black/20 px-3 py-2">
+                                        <p className="text-[11px] uppercase tracking-[0.12em] text-[#b99e8d]">{item.label}</p>
+                                        <p className="mt-0.5 text-sm text-white">{formatReviewValue(item.value)}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="mt-4 text-sm text-[#c2b2a2]">
                             <p>Any follow-up edit updates this result instantly.</p>
-                            <button
-                              type="button"
-                              onClick={() => saveResultToDevice()}
-                              className="rounded-full border border-[#8a4a20] bg-[#21140c] px-4 py-2 font-semibold text-[#ffd7bb] transition hover:brightness-110"
-                            >
-                              Generate PDF
-                            </button>
                           </div>
                         </motion.section>
                       )}
@@ -993,7 +1196,7 @@ export default function App() {
                 )}
               </AnimatePresence>
 
-              <div className="sticky bottom-0 z-20 space-y-3 border-t border-[#2f231a] bg-[linear-gradient(180deg,rgba(13,13,13,0.75),rgba(10,10,10,0.94))] p-3 backdrop-blur-xl md:p-4">
+              <div className={`${hasConversationStarted ? 'sticky bottom-0' : 'relative'} z-20 space-y-3 border-t border-[#2f231a] bg-[linear-gradient(180deg,rgba(13,13,13,0.75),rgba(10,10,10,0.94))] p-3 backdrop-blur-xl md:p-4`}>
                 <div className="flex flex-wrap gap-2">
                   {starterSuggestions.map((item) => (
                     <button
