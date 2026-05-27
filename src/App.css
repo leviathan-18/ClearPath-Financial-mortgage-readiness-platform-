@@ -27,7 +27,7 @@
   gap: 16px;
   width: 100%;
   height: 100svh;
-  padding: 14px;
+  padding: 0 14px;
 }
 
 .topbar {
@@ -462,10 +462,10 @@
 .app-stage {
   min-width: 0;
   min-height: 0;
-  display: flex;
+  display: grid;
+  grid-template-rows: 1fr auto;
   align-items: stretch;
-  flex-direction: column;
-  gap: 6px;
+  gap: 16px;
 }
 
 /* anchor for absolutely-positioned chat card */
@@ -500,11 +500,30 @@
 
 .hero-stage-shell {
   --hero-scale: 1;
-  padding: 0 0 6px;
+  padding: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  height: 100%;
+}
+
+/* Hero should fill the top grid row (no sticky offset) */
+.hero-stage-shell {
+  position: static;
+  z-index: 1;
+  pointer-events: auto;
+}
+
+.hero-stage-card,
+.hero-preview-card {
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease;
+  transform-origin: top center;
 }
 
 .hero-stage-card {
-  max-height: calc(220px * var(--hero-scale));
+  max-height: none;
+  width: 100%;
+  height: 100%;
 }
 
 .hero-preview-card,
@@ -536,6 +555,13 @@
     linear-gradient(180deg, #101010, #090909);
   padding: calc(10px * var(--hero-scale)) calc(12px * var(--hero-scale)) calc(10px * var(--hero-scale));
   overflow: hidden;
+}
+
+/* Make the hero preview occupy full available height so it covers top-bottom */
+.hero-stage-shell .hero-preview-card {
+  height: 100%;
+  margin: 0;
+  border-radius: 12px;
 }
 
 .hero-preview-top {
@@ -869,15 +895,11 @@
 .app-stage {
   min-width: 0;
   min-height: 0;
-  display: flex;
-  align-items: stretch;
-  flex-direction: column;
-  gap: 6px;
 }
 
 .hero-stage-shell {
   --hero-scale: 1;
-  padding: 0 0 6px;
+  padding: 0;
 }
 
 .hero-stage-card {
@@ -1258,17 +1280,19 @@
   overflow: hidden;
 }
 
-/* Desktop: pin chat to bottom of the app stage */
+/* Desktop: keep chat in document flow so it can size around the hero */
 .chat-card {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 14px;
+  position: relative;
   z-index: 6;
+  display: flex;
+  flex-direction: column;
+  --chat-height: clamp(320px, 36vh, 520px);
+  height: var(--chat-height);
+  margin-top: 12px;
 }
 
 .hero-stage-shell + .chat-card {
-  margin-top: 0;
+  margin-top: 8px;
 }
 
 .canvas-head {
@@ -1318,9 +1342,9 @@
   animation: riseIn 220ms ease;
 }
 
-.chat-bubble.assistant {
-  justify-self: flex-start;
-}
+  --chat-height: clamp(140px, 18vh, 220px);
+  height: var(--chat-height);
+  margin: 0 auto 0;
 
 .chat-bubble.user {
   justify-self: flex-end;
