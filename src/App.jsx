@@ -417,6 +417,14 @@ export default function App() {
     if (hasConversationStarted) setMobileMenuOpen(false)
   }, [hasConversationStarted])
 
+  // If the conversation hasn't started yet, push the first intake question
+  useEffect(() => {
+    if (!hasConversationStarted && !isTyping && !intakeComplete && messages.length <= 1) {
+      // queue the first question so the chat shows the prompt
+      queueAssistantReply(fieldLabel(currentField), 420)
+    }
+  }, [hasConversationStarted, isTyping, intakeComplete, messages.length, currentField])
+
   useEffect(() => () => {
     if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current)
   }, [])
@@ -732,8 +740,7 @@ export default function App() {
         </aside>
 
         <main className="app-stage">
-          {!hasConversationStarted && (
-            <section className="hero-stage-shell" style={{ '--hero-scale': heroScale }}>
+          <section className="hero-stage-shell" style={{ '--hero-scale': heroScale }}>
             <section className="hero-preview-card hero-stage-card">
               <div className="hero-preview-top">
                 <div className="hero-preview-dot" aria-hidden="true" />
@@ -777,8 +784,7 @@ export default function App() {
                 </div>
               </div>
             </section>
-            </section>
-          )}
+          </section>
 
           <section className={`chat-card mobile-shell ${hasConversationStarted ? 'chat-active' : 'chat-idle'}`}>
 
