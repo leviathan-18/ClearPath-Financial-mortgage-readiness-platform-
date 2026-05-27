@@ -425,6 +425,14 @@ export default function App() {
     if (hasConversationStarted) setMobileMenuOpen(false)
   }, [hasConversationStarted])
 
+  // If the conversation hasn't started yet, push the first intake question
+  useEffect(() => {
+    if (!hasConversationStarted && !isTyping && !intakeComplete && messages.length <= 1) {
+      // queue the first question so the chat shows the prompt
+      queueAssistantReply(fieldLabel(currentField), 420)
+    }
+  }, [hasConversationStarted, isTyping, intakeComplete, messages.length, currentField])
+
   useEffect(() => () => {
     if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current)
   }, [])
@@ -1009,7 +1017,6 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-
                 <form onSubmit={handleSubmit} className="group flex items-center gap-2 rounded-[20px] border border-[#4d3526] bg-[#121212]/90 p-1.5 shadow-[0_8px_30px_rgba(0,0,0,0.45)]">
                   <input
                     type="text"
