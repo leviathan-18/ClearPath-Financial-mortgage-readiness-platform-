@@ -375,6 +375,9 @@ export default function App() {
   const currentField = intakeFields[activeFieldIndex]
   const currentErrors = useMemo(() => validateStep(activeFieldIndex, form), [activeFieldIndex, form])
   const hasConversationStarted = messages.some((message) => message.role === 'user')
+  const latestAssistantMessage = useMemo(() => {
+    return [...messages].reverse().find((m) => m.role === 'assistant')
+  }, [messages])
   const sidebarHighlights = [
     { x: '10%', y: '18%' },
     { x: '42%', y: '36%' },
@@ -409,7 +412,10 @@ export default function App() {
 
   useEffect(() => {
     if (chatScrollRef.current) {
-      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
+      chatScrollRef.current.scrollTo({
+        top: chatScrollRef.current.scrollHeight,
+        behavior: 'smooth',
+      })
     }
   }, [messages, isTyping, approvalResult, intakeComplete])
 
@@ -608,6 +614,13 @@ export default function App() {
     pushMessage('assistant', intakeComplete ? 'Ask me to generate the result, download the PDF, or change any previous answer.' : 'I can explain your mortgage result, estimate eligibility, or update any captured field.')
   }
 
+  const handleKeyDown = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      handleSubmit(event)
+    }
+  }
+
   const handleSubmit = (event) => {
     event.preventDefault()
     handleChatText(draft)
@@ -740,101 +753,110 @@ export default function App() {
         </aside>
 
         <main className="app-stage">
-          <section className="hero-stage-shell" style={{ '--hero-scale': heroScale }}>
-            <section className="hero-preview-card hero-stage-card">
-              <div className="hero-preview-top">
-                <div className="hero-preview-dot" aria-hidden="true" />
-                <span>Mortgage Assistant</span>
-                <div className="hero-preview-square" aria-hidden="true" />
-              </div>
-
-              <div className="hero-mini-card">
-                <div className="hero-icon" aria-hidden="true">
-                  <svg width="32" height="32" viewBox="0 0 34 34" fill="none">
-                    <path d="M17 8L19.5 14L26 14L21 18L23 24.5L17 21L11 24.5L13 18L8 14L14.5 14Z" stroke="#ff5a00" strokeWidth="1.4" strokeLinejoin="round" fill="none" />
-                    <circle cx="17" cy="17" r="3" fill="#ff5a00" opacity="0.85" />
-                    <line x1="17" y1="4" x2="17" y2="7" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
-                    <line x1="17" y1="27" x2="17" y2="30" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
-                    <line x1="4" y1="17" x2="7" y2="17" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
-                    <line x1="27" y1="17" x2="30" y2="17" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
+          <div className="stage-main-content">
+            {/* Hero Section Transition Wrapper */}
+            <div className={`hero-transition-wrap ${hasConversationStarted ? 'collapsed' : 'expanded'}`}>
+              <section className="hero-preview-card hero-stage-card">
+                <div className="hero-preview-top">
+                  <div className="hero-preview-dot" aria-hidden="true" />
+                  <span>Mortgage Assistant</span>
+                  <div className="hero-preview-square" aria-hidden="true" />
                 </div>
-                <h1>Mortgage Assistant</h1>
-                <p>Track mortgage readiness by typing naturally.</p>
-              </div>
 
-              <div className="hero-network-actions" role="tablist" aria-label="Hero sections">
-                {sidebarNav.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`hero-network-action ${sidebarView === item.id ? 'active' : ''}`}
-                    onClick={() => setSidebarView(item.id)}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
+                <div className="hero-center-content">
+                  <div className="hero-mini-card">
+                    <div className="hero-icon" aria-hidden="true">
+                      <svg width="32" height="32" viewBox="0 0 34 34" fill="none">
+                        <path d="M17 8L19.5 14L26 14L21 18L23 24.5L17 21L11 24.5L13 18L8 14L14.5 14Z" stroke="#ff5a00" strokeWidth="1.4" strokeLinejoin="round" fill="none" />
+                        <circle cx="17" cy="17" r="3" fill="#ff5a00" opacity="0.85" />
+                        <line x1="17" y1="4" x2="17" y2="7" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
+                        <line x1="17" y1="27" x2="17" y2="30" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
+                        <line x1="4" y1="17" x2="7" y2="17" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
+                        <line x1="27" y1="17" x2="30" y2="17" stroke="#ff6a20" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    </div>
+                    <h1>Mortgage Assistant</h1>
+                    <p>Track mortgage readiness by typing naturally.</p>
+                  </div>
 
-              <div className="hero-network">
-                <div className="hero-network-dots" aria-hidden="true">
-                  {sidebarHighlights.map((item, index) => (
-                    <span key={`${item.x}-${item.y}-${index}`} className="hero-network-node" style={{ left: item.x, top: item.y }} />
-                  ))}
+                  <div className="hero-network-actions" role="tablist" aria-label="Hero sections">
+                    {sidebarNav.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`hero-network-action ${sidebarView === item.id ? 'active' : ''}`}
+                        onClick={() => setSidebarView(item.id)}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="hero-network">
+                    <div className="hero-network-dots" aria-hidden="true">
+                      {sidebarHighlights.map((item, index) => (
+                        <span key={`${item.x}-${item.y}-${index}`} className="hero-network-node" style={{ left: item.x, top: item.y }} />
+                      ))}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </section>
-          </section>
-
-          <section className={`chat-card mobile-shell ${hasConversationStarted ? 'chat-active' : 'chat-idle'}`}>
-
-            <div className="chat-stream mobile-chat-stream" ref={chatScrollRef}>
-              {messages.map((message) => (
-                <article key={message.id} className={`chat-bubble ${message.role}`}>
-                  <p>{message.text}</p>
-                </article>
-              ))}
-
-              {isTyping && (
-                <article className="chat-bubble assistant typing">
-                  <div className="typing-dots" aria-label="Assistant is typing">
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                </article>
-              )}
-
-              {intakeComplete && resultRequested && (
-                <section className="result-panel">
-                  <div className="result-head">
-                    <span className="eyebrow">Result</span>
-                    <h3>{buildResultTitle(approvalResult)}</h3>
-                  </div>
-                  <div className="result-grid">
-                    <div>
-                      <span>Approval chance</span>
-                      <strong>{approvalResult.approvalChance}</strong>
-                    </div>
-                    <div>
-                      <span>Estimated loan</span>
-                      <strong>{approvalResult.estimatedLoan}</strong>
-                    </div>
-                    <div>
-                      <span>Risk</span>
-                      <strong>{approvalResult.risk}</strong>
-                    </div>
-                  </div>
-                  <div className="result-meta">
-                    <p>Any follow-up edit updates this result instantly. Ask to regenerate the PDF when you are ready.</p>
-                    <button type="button" className="result-action" onClick={() => saveResultToDevice()}>
-                      Generate PDF
-                    </button>
-                  </div>
-                </section>
-              )}
+              </section>
             </div>
-            <div className="bottom-area">
+
+            {/* Chat Section Transition Wrapper */}
+            <div className={`chat-transition-wrap ${hasConversationStarted ? 'expanded' : 'collapsed'}`}>
+              <div className="chat-stream" ref={chatScrollRef}>
+                {messages.map((message) => (
+                  <article key={message.id} className={`chat-bubble ${message.role}`}>
+                    <p>{message.text}</p>
+                  </article>
+                ))}
+
+                {isTyping && (
+                  <article className="chat-bubble assistant typing">
+                    <div className="typing-dots" aria-label="Assistant is typing">
+                      <span />
+                      <span />
+                      <span />
+                    </div>
+                  </article>
+                )}
+
+                {intakeComplete && resultRequested && (
+                  <section className="result-panel">
+                    <div className="result-head">
+                      <span className="eyebrow">Result</span>
+                      <h3>{buildResultTitle(approvalResult)}</h3>
+                    </div>
+                    <div className="result-grid">
+                      <div>
+                        <span>Approval chance</span>
+                        <strong>{approvalResult.approvalChance}</strong>
+                      </div>
+                      <div>
+                        <span>Estimated loan</span>
+                        <strong>{approvalResult.estimatedLoan}</strong>
+                      </div>
+                      <div>
+                        <span>Risk</span>
+                        <strong>{approvalResult.risk}</strong>
+                      </div>
+                    </div>
+                    <div className="result-meta">
+                      <p>Any follow-up edit updates this result instantly. Ask to regenerate the PDF when you are ready.</p>
+                      <button type="button" className="result-action" onClick={() => saveResultToDevice()}>
+                        Generate PDF
+                      </button>
+                    </div>
+                  </section>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Bottom Area Pinned */}
+          <div className="bottom-area">
+            {hasConversationStarted && getQuickSuggestions(currentField).length > 0 && (
               <div className="suggestions">
                 {getQuickSuggestions(currentField).map((item) => (
                   <button key={item} type="button" className="chip" onClick={() => handleSuggestionClick(item)}>
@@ -842,25 +864,32 @@ export default function App() {
                   </button>
                 ))}
               </div>
+            )}
 
-              <form className="input-bar" onSubmit={handleSubmit}>
-                <input
-                  type="text"
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  placeholder={currentField ? currentField.placeholder || currentField.label : 'Type a follow-up question...'}
-                />
-                <button type="submit" className="send-btn" aria-label="Send message">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="22" y1="2" x2="11" y2="13" />
-                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                  </svg>
-                </button>
-              </form>
+            {!hasConversationStarted && latestAssistantMessage && (
+              <div key={latestAssistantMessage.id} className="ai-prompt-line">
+                {latestAssistantMessage.text}
+              </div>
+            )}
 
-              {savedState === 'saved' && <div className="status-pill success">Saved to device</div>}
-            </div>
-          </section>
+            <form className="input-bar" onSubmit={handleSubmit}>
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={currentField ? currentField.placeholder || currentField.label : 'Type a follow-up question...'}
+                rows={1}
+              />
+              <button type="submit" className="send-btn" aria-label="Send message">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+              </button>
+            </form>
+
+            {savedState === 'saved' && <div className="status-pill success">Saved to device</div>}
+          </div>
         </main>
       </div>
     </div>
